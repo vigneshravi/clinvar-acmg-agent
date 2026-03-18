@@ -443,7 +443,132 @@ if "final_state" in st.session_state:
                     with cons_cols[i]:
                         st.metric(name, f"{val:.3f}" if isinstance(val, float) else str(val))
 
-    # --- Section 3: ACMG Criteria ---
+    # --- Section 3: Case-Control Analysis ---
+    if gnomad and isinstance(gnomad, dict):
+        af_data = gnomad.get("allele_frequency", {})
+        if af_data.get("variant_in_gnomad"):
+            with st.expander("\U0001f9ea Case-Control Analysis (Fisher's / Weighted GLM)", expanded=False):
+                st.markdown(
+                    "Compare your cohort's variant frequency against gnomAD populations. "
+                    "Enter the number of variant carriers and total sample size below."
+                )
+
+                cc1, cc2 = st.columns(2)
+                with cc1:
+                    case_carriers = st.number_input(
+                        "Variant carriers in your cohort",
+                        min_value=0, value=1, step=1, key="case_carriers"
+                    )
+                with cc2:
+                    case_total = st.number_input(
+                        "Total individuals in your cohort",
+                        min_value=1, value=100, step=1, key="case_total"
+                    )
+
+                # gnomAD dataset selection
+                from tools.gnomad_graphql import GNOMAD_DATASETS
+                build = final_state.get("genome_build", "GRCh38")
+                available_ds = [
+                    ds_id for ds_id, info in GNOMAD_DATASETS.items()
+                    if info["build"] == build
+                ]
+                ds_labels = {
+                    ds_id: f"{GNOMAD_DATASETS[ds_id]['label']} ({GNOMAD_DATASETS[ds_id]['samples']:,} samples)"
+                    for ds_id in available_ds
+                }
+                selected_ds = st.multiselect(
+                    "gnomAD control datasets",
+                    options=available_ds,
+                    default=[available_ds[0]] if available_ds else [],
+                    format_func=lambda x: ds_labels.get(x, x),
+                    key="gnomad_datasets",
+                )
+
+                run_cc = st.button("Run Case-Control Analysis", key="run_cc")
+
+                if run_cc and case_total > 0:
+                    from tools.case_control import run_case_control_analysis
+                    from tools.gnomad_graphql import query_gnomad_by_rsid
+
+                    rsid = gnomad.get("rsid", "")
+
+                    # Run against each selected dataset
+                    for ds_id in selected_ds:
+                        ds_label = GNOMAD_DATASETS.get(ds_id, {}).get("label", ds_id)
+                        st.markdown(f"##### {ds_label}")
+
+                        # Query gnomAD for this dataset
+                        with st.spinner(f"Querying {ds_label}..."):
+                            if rsid:
+                                ds_data = query_gnomad_by_rsid(rsid, build, ds_id)
+                            else:
+                                ds_data = None
+
+                        if not ds_data:
+                            st.warning(f"Variant not found in {ds_label}")
+                            continue
+
+                        # Add dataset label
+                        ds_data["dataset_label"] = ds_label
+
+                        # Run analysis
+                        cc_result = run_case_control_analysis(
+                            case_carriers, case_total, ds_data
+                        )
+
+                        # Overall Fisher's
+                        overall = cc_result["overall_fishers"]
+                        m1, m2, m3 = st.columns(3)
+                        with m1:
+                            st.metric(
+                                "Case AF",
+                                f"{overall['case_af']:.4f}" if overall["case_af"] else "0",
+                            )
+                        with m2:
+                            st.metric(
+                                "Control AF",
+                                f"{overall['control_af']:.6f}" if overall["control_af"] else "0",
+                            )
+                        with m3:
+                            or_val = overall.get("odds_ratio")
+                            st.metric(
+                                "Odds Ratio",
+                                f"{or_val:.2f}" if or_val and or_val != float("inf") else "Inf" if or_val == float("inf") else "N/A",
+                            )
+
+                        pval = overall.get("p_value")
+                        sig = overall.get("significant", False)
+                        pval_str = f"{pval:.2e}" if pval and pval < 0.001 else f"{pval:.4f}" if pval else "N/A"
+                        color = "red" if sig else "green"
+                        st.markdown(f"**Overall Fisher's:** {overall.get('interpretation', '')} "
+                                    f"(:{color}[p={pval_str}])")
+
+                        # Per-ancestry Fisher's
+                        anc_results = cc_result.get("ancestry_fishers", [])
+                        if anc_results:
+                            anc_rows = []
+                            for ar in anc_results:
+                                pv = ar.get("p_value")
+                                anc_rows.append({
+                                    "Population": ar.get("population", ""),
+                                    "Case AF": f"{ar['case_af']:.4f}",
+                                    "Control AF": f"{ar['control_af']:.6f}",
+                                    "OR": f"{ar['odds_ratio']:.2f}" if ar.get("odds_ratio") and ar["odds_ratio"] != float("inf") else "Inf",
+                                    "p-value": f"{pv:.2e}" if pv and pv < 0.001 else f"{pv:.4f}" if pv else "N/A",
+                                    "Significant": "\u2705" if ar.get("significant") else "",
+                                })
+                            st.dataframe(anc_rows, use_container_width=True, hide_index=True)
+
+                        # Weighted GLM
+                        glm = cc_result.get("weighted_glm", {})
+                        if glm.get("p_value") is not None:
+                            st.markdown(f"**Weighted GLM:** {glm.get('interpretation', '')}")
+                        elif glm.get("interpretation"):
+                            st.info(glm["interpretation"])
+
+                        st.divider()
+
+    # --- Section 4: ACMG Criteria ---
     with st.expander("\U0001f3af ACMG Criteria", expanded=True):
         criteria = final_state.get("criteria_triggered") or []
         met_criteria = [c for c in criteria if c.get("met", True)]

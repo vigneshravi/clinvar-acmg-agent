@@ -6,3 +6,6 @@ streamlit>=1.38.0
 biopython>=1.84
 python-dotenv>=1.0.0
 anthropic>=0.40.0
+scipy>=1.11.0
+statsmodels>=0.14.0
+numpy>=1.24.0

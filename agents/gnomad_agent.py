@@ -12,7 +12,11 @@ import re
 from typing import Any, Optional
 
 from graph.state import VariantState
-from tools.gnomad_graphql import query_gnomad_by_rsid, query_gnomad_variant
+from tools.gnomad_graphql import (
+    GNOMAD_DATASETS,
+    query_gnomad_by_rsid,
+    query_gnomad_variant,
+)
 from tools.myvariant import query_myvariant
 
 logger = logging.getLogger(__name__)
