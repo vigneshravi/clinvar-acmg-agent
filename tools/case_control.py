@@ -140,8 +140,14 @@ def run_case_control_analysis(
 
     ancestry_fishers.sort(key=lambda x: x.get("p_value", 1) or 1)
 
-    # Weighted GLM with per-ethnicity data
-    glm_result = _weighted_glm(case_data, populations)
+    # Weighted GLM — only with ethnicities that have explicit user data
+    # (not fallback-to-overall, which would test the same ratio repeatedly)
+    eth_only_data = {k: v for k, v in case_data.items() if k != "overall"}
+    glm_result = _weighted_glm(eth_only_data, populations) if len(eth_only_data) >= 2 else {
+        "model": "Weighted logistic regression",
+        "coefficient": None, "std_error": None, "z_score": None, "p_value": None,
+        "interpretation": "Need at least 2 ethnicities with user data for GLM",
+    }
 
     return {
         "case_data": case_data,

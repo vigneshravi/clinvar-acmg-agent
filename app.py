@@ -381,29 +381,21 @@ if "final_state" in st.session_state:
         with st.expander("\U0001f9ea Case-Control Analysis", expanded=False):
             st.markdown("Compare your cohort's variant frequency against gnomAD populations.")
 
-            # Overall case input
-            st.markdown("**Overall cohort**")
-            oc1, oc2 = st.columns(2)
-            with oc1:
-                overall_carriers = st.number_input("Carriers", min_value=0, value=1, step=1, key="cc_overall_carriers")
-            with oc2:
-                overall_total = st.number_input("Total samples", min_value=1, value=100, step=1, key="cc_overall_total")
+            # Ethnicity-specific toggle (above overall so auto-sum can work)
+            use_eth = st.checkbox("Provide ethnicity-specific counts", key="use_eth_input")
 
-            # Ethnicity-specific input toggle
-            use_eth = st.checkbox("Provide ethnicity-specific case counts", key="use_eth_input")
-
-            case_data = {"overall": {"carriers": overall_carriers, "total": overall_total}}
-
+            # Collect per-ethnicity data first (if enabled)
+            eth_case_data: dict[str, dict[str, int]] = {}
             if use_eth:
-                st.markdown("**Per-ancestry case counts** (leave 0/0 to use overall)")
+                st.markdown("**Per-ancestry case counts** *(fill in ancestries you have data for)*")
                 pops_available = af_data.get("populations", {})
                 eth_cols = st.columns(3)
-                for i, pid in enumerate(POP_ORDER):
+                col_idx = 0
+                for pid in POP_ORDER:
                     if pid not in pops_available:
                         continue
                     pname = POP_NAMES.get(pid, pid)
-                    col = eth_cols[i % 3]
-                    with col:
+                    with eth_cols[col_idx % 3]:
                         st.markdown(f"*{pname}*")
                         e1, e2 = st.columns(2)
                         with e1:
@@ -411,7 +403,34 @@ if "final_state" in st.session_state:
                         with e2:
                             et = st.number_input("Total", min_value=0, value=0, step=1, key=f"cc_{pid}_t")
                         if et > 0:
-                            case_data[pid] = {"carriers": ec, "total": et}
+                            eth_case_data[pid] = {"carriers": ec, "total": et}
+                    col_idx += 1
+
+            # Auto-sum from ethnicity rows if any are filled
+            eth_sum_carriers = sum(d["carriers"] for d in eth_case_data.values())
+            eth_sum_total = sum(d["total"] for d in eth_case_data.values())
+
+            # Overall fields — auto-populated from ethnicity sum, but user can override
+            st.markdown("**Overall cohort**" + (" *(auto-summed from ancestries, editable)*" if eth_case_data else ""))
+            oc1, oc2 = st.columns(2)
+            with oc1:
+                default_carriers = eth_sum_carriers if eth_case_data else 1
+                overall_carriers = st.number_input(
+                    "Carriers", min_value=0, value=default_carriers, step=1, key="cc_overall_carriers"
+                )
+            with oc2:
+                default_total = eth_sum_total if eth_case_data else 100
+                overall_total = st.number_input(
+                    "Total samples", min_value=1, value=max(default_total, 1), step=1, key="cc_overall_total"
+                )
+
+            # Build case_data dict
+            case_data = {"overall": {"carriers": overall_carriers, "total": overall_total}}
+            case_data.update(eth_case_data)
+
+            # Count how many ethnicities have user data
+            eth_with_data = [p for p in case_data if p != "overall"]
+            n_eth_with_data = len(eth_with_data)
 
             # Dataset selection
             from tools.gnomad_graphql import GNOMAD_DATASETS
@@ -442,16 +461,22 @@ if "final_state" in st.session_state:
                         continue
 
                     ds_data["dataset_label"] = ds_label
-                    cc_result = run_case_control_analysis(case_data, ds_data)
 
-                    # Overall result
+                    # Build case_data for this analysis:
+                    # Only include ethnicities with user-provided data
+                    analysis_case_data = {"overall": case_data["overall"]}
+                    analysis_case_data.update(eth_case_data)
+
+                    cc_result = run_case_control_analysis(analysis_case_data, ds_data)
+
+                    # Overall Fisher's (always runs)
                     ov = cc_result["overall_fishers"]
                     or_str = f"{ov['odds_ratio']:.2f}" if ov.get("odds_ratio") and ov["odds_ratio"] != float("inf") else "Inf" if ov.get("odds_ratio") == float("inf") else "N/A"
                     pv = ov.get("p_value")
                     pv_str = f"{pv:.2e}" if pv and pv < 0.001 else f"{pv:.4f}" if pv else "N/A"
                     sig_color = "red" if ov.get("significant") else "green"
                     st.markdown(
-                        f"**Overall:** Case AF={ov['case_af']:.4f} vs Control AF={ov['control_af']:.6f} "
+                        f"**Overall Fisher's:** Case AF={ov['case_af']:.4f} vs Control AF={ov['control_af']:.6f} "
                         f"| OR={or_str} | :{sig_color}[p={pv_str}]"
                     )
 
@@ -459,12 +484,16 @@ if "final_state" in st.session_state:
                     anc = cc_result.get("ancestry_fishers", [])
                     if anc:
                         rows = []
-                        plot_data = []
+                        plot_data = []  # only user-specified ethnicities
                         for ar in anc:
                             or_v = ar.get("odds_ratio")
                             pv = ar.get("p_value")
+                            pop_id = ar.get("population_id", "")
+                            has_user_data = pop_id in eth_case_data
+                            source_tag = "" if has_user_data else " (using overall)"
+
                             rows.append({
-                                "Population": ar.get("population", ""),
+                                "Population": ar.get("population", "") + source_tag,
                                 "Case (carriers/total)": f"{ar['case_ac']}/{ar['case_an']//2}",
                                 "Control (AC/AN)": f"{ar['control_ac']}/{ar['control_an']}",
                                 "Case AF": f"{ar['case_af']:.4f}",
@@ -473,7 +502,9 @@ if "final_state" in st.session_state:
                                 "p-value": f"{pv:.2e}" if pv and pv < 0.001 else f"{pv:.4f}" if pv else "N/A",
                                 "Sig": "\u2705" if ar.get("significant") else "",
                             })
-                            if or_v and or_v != float("inf") and or_v > 0:
+
+                            # Forest plot: only user-specified ethnicities
+                            if has_user_data and or_v and or_v != float("inf") and or_v > 0:
                                 plot_data.append({
                                     "pop": ar.get("population", ""),
                                     "or": or_v,
@@ -481,9 +512,10 @@ if "final_state" in st.session_state:
                                     "ci_hi": ar.get("ci_upper", or_v * 2),
                                     "sig": ar.get("significant", False),
                                 })
+
                         st.dataframe(rows, use_container_width=True, hide_index=True)
 
-                        # Forest plot
+                        # Forest plot — only ethnicities with user data
                         if plot_data:
                             import plotly.graph_objects as go
                             fig = go.Figure()
@@ -498,8 +530,7 @@ if "final_state" in st.session_state:
                                 x=x_vals, y=y_labels, mode="markers",
                                 marker=dict(size=10, color=colors),
                                 error_x=dict(
-                                    type="data",
-                                    symmetric=False,
+                                    type="data", symmetric=False,
                                     array=[h - v for v, h in zip(x_vals, ci_hi)],
                                     arrayminus=[v - l for v, l in zip(x_vals, ci_lo)],
                                 ),
@@ -507,24 +538,31 @@ if "final_state" in st.session_state:
                             ))
                             fig.add_vline(x=1, line_dash="dash", line_color="gray")
                             fig.update_layout(
-                                title="Forest Plot — Odds Ratio by Ancestry",
+                                title="Forest Plot — Odds Ratio by Ancestry (user-specified only)",
                                 xaxis_title="Odds Ratio (log scale)",
                                 xaxis_type="log",
-                                height=max(300, len(pops_sorted) * 40 + 100),
+                                height=max(300, len(pops_sorted) * 50 + 100),
                                 showlegend=False,
                                 margin=dict(l=200),
                                 font=dict(size=13),
                             )
                             st.plotly_chart(fig, use_container_width=True)
 
-                    # GLM
-                    glm = cc_result.get("weighted_glm", {})
-                    if glm.get("p_value") is not None:
-                        glm_pv = glm["p_value"]
-                        glm_color = "red" if glm_pv < 0.05 else "green"
-                        st.markdown(f"**Weighted GLM:** {glm['interpretation']} :{glm_color}[p={glm_pv:.4f}]")
-                    elif glm.get("interpretation"):
-                        st.markdown(f"**Weighted GLM:** {glm['interpretation']}")
+                    # Weighted GLM — only if >= 2 ethnicities have user data
+                    if n_eth_with_data >= 2:
+                        glm = cc_result.get("weighted_glm", {})
+                        if glm.get("p_value") is not None:
+                            glm_pv = glm["p_value"]
+                            glm_color = "red" if glm_pv < 0.05 else "green"
+                            st.markdown(f"**Weighted GLM:** {glm['interpretation']} :{glm_color}[p={glm_pv:.4f}]")
+                        elif glm.get("interpretation"):
+                            st.markdown(f"**Weighted GLM:** {glm['interpretation']}")
+                    elif use_eth:
+                        if n_eth_with_data == 1:
+                            st.info("Provide at least 2 ethnicities with data to enable weighted GLM.")
+                        else:
+                            st.info("Provide ethnicity-specific counts to enable weighted GLM.")
+
                     st.divider()
 
     # --- ACMG Criteria ---
