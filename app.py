@@ -309,43 +309,73 @@ if "final_state" in st.session_state:
                 st.markdown(" &nbsp;|&nbsp; ".join(link_parts))
 
             st.markdown("#### gnomAD Allele Frequencies")
+            nc = gnomad.get("non_cancer", {})
+            nc_avail = nc.get("available", False)
+
             if af_data.get("variant_in_gnomad"):
+                # Summary line: Overall vs Non-Cancer
                 gaf = af_data.get("global_af")
-                maf = af_data.get("max_pop_af", 0)
-                mpn = POP_NAMES.get(af_data.get("max_pop_name", ""), af_data.get("max_pop_name", ""))
+                nc_gaf = nc.get("global_af")
                 exome = af_data.get("exome") or {}
                 genome = af_data.get("genome") or {}
-                st.markdown(
-                    f"**Global AF:** {gaf:.6f} &nbsp;|&nbsp; "
-                    f"**Max Pop AF:** {maf:.6f} ({mpn}) &nbsp;|&nbsp; "
-                    f"**Homozygotes:** {af_data.get('hom', 0)} &nbsp;|&nbsp; "
-                    + (f"**Exome:** {exome.get('ac',0)}/{exome.get('an',0)} &nbsp;|&nbsp; " if exome.get("an") else "")
-                    + (f"**Genome:** {genome.get('ac',0)}/{genome.get('an',0)}" if genome.get("an") else "")
-                )
+                nc_exome = nc.get("exome") or {}
+                nc_genome = nc.get("genome") or {}
 
+                summary = f"**Global AF:** {gaf:.6f}"
+                if nc_avail and nc_gaf is not None:
+                    summary += f" &nbsp;|&nbsp; **Non-cancer AF:** {nc_gaf:.6f}"
+                summary += f" &nbsp;|&nbsp; **Hom:** {af_data.get('hom', 0)}"
+                if nc_avail:
+                    summary += f" / {nc.get('hom', 0)} (non-cancer)"
+                if exome.get("an"):
+                    summary += f" &nbsp;|&nbsp; **Exome:** {exome.get('ac',0)}/{exome.get('an',0)}"
+                    if nc_exome.get("an"):
+                        summary += f" \u2014 NC: {nc_exome.get('ac',0)}/{nc_exome.get('an',0)}"
+                if genome.get("an"):
+                    summary += f" &nbsp;|&nbsp; **Genome:** {genome.get('ac',0)}/{genome.get('an',0)}"
+                    if nc_genome.get("an"):
+                        summary += f" \u2014 NC: {nc_genome.get('ac',0)}/{nc_genome.get('an',0)}"
+                st.markdown(summary)
+
+                # Population table: Overall + Non-Cancer side by side
                 pops = af_data.get("populations", {})
+                nc_pops = nc.get("populations", {})
                 if pops:
                     pop_rows = []
                     for pid in POP_ORDER:
                         pd = pops.get(pid)
                         if pd and isinstance(pd, dict):
-                            pop_rows.append({
+                            row = {
                                 "Population": pd.get("name", pid),
                                 "AF": f"{pd.get('af', 0):.6f}",
                                 "AC": pd.get("ac", 0),
                                 "AN": pd.get("an", 0),
                                 "Hom": pd.get("hom", 0),
-                            })
+                            }
+                            # Add non-cancer columns if available
+                            if nc_avail:
+                                nc_pd = nc_pops.get(pid, {})
+                                if isinstance(nc_pd, dict) and nc_pd.get("an", 0) > 0:
+                                    row["NC AF"] = f"{nc_pd.get('af', 0):.6f}"
+                                    row["NC AC"] = nc_pd.get("ac", 0)
+                                    row["NC AN"] = nc_pd.get("an", 0)
+                                else:
+                                    row["NC AF"] = "\u2014"
+                                    row["NC AC"] = "\u2014"
+                                    row["NC AN"] = "\u2014"
+                            pop_rows.append(row)
                     if pop_rows:
                         st.dataframe(pop_rows, use_container_width=True, hide_index=True)
             else:
                 st.info("Variant **not found** in gnomAD — absent from population controls (supports PM2)")
 
-            # ACMG frequency flags
+            # ACMG frequency flags (evaluated on non-cancer AF)
+            acmg_note = " *(based on non-cancer AF)*" if nc_avail else ""
             st.markdown(
                 f"{'\u2705' if acmg_crit.get('BA1_met') else '\u274C'} **BA1** (AF>5%) &nbsp;&nbsp; "
                 f"{'\u2705' if acmg_crit.get('BS1_met') else '\u274C'} **BS1** (AF>1%) &nbsp;&nbsp; "
                 f"{'\u2705' if acmg_crit.get('PM2_met') else '\u274C'} **PM2** (Absent/rare)"
+                f"{acmg_note}"
             )
 
             # In silico predictors

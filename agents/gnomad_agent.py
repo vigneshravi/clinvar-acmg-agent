@@ -328,6 +328,23 @@ def gnomad_agent_node(state: VariantState) -> dict[str, Any]:
         logger.warning("gnomAD query failed: %s", e)
         warnings.append(f"gnomAD query failed: {str(e)}")
 
+    # ---- Step 1b: Query non-cancer dataset ----
+    # Non-cancer subset excludes cancer cohorts (TCGA etc.) — use this for
+    # ACMG frequency criteria since cancer samples may have somatic mutations
+    non_cancer_data = None
+    non_cancer_dataset = {
+        "GRCh38": "gnomad_r3_non_cancer",   # v3.1.2 genomes, non-cancer
+        "GRCh37": "gnomad_r2_1_non_cancer",  # v2.1.1, non-cancer
+    }.get(genome_build)
+
+    if non_cancer_dataset and rsid:
+        try:
+            non_cancer_data = query_gnomad_by_rsid(rsid, genome_build, non_cancer_dataset)
+            if non_cancer_data:
+                logger.info("gnomAD non-cancer: AF=%s", non_cancer_data.get("global_af"))
+        except Exception as e:
+            logger.warning("gnomAD non-cancer query failed: %s", e)
+
     # ---- Step 2: Query MyVariant.info for dbNSFP + CADD ----
     myvariant_data = None
     try:
@@ -365,7 +382,10 @@ def gnomad_agent_node(state: VariantState) -> dict[str, Any]:
                 "populations": af_source.get("populations", {}),
             }
 
-    freq_criteria = _compute_frequency_criteria(af_source if af_source else None)
+    # Use non-cancer AF for ACMG frequency criteria (BA1, BS1, PM2)
+    # since cancer cohort samples may contain somatic mutations
+    freq_source = non_cancer_data if non_cancer_data else af_source
+    freq_criteria = _compute_frequency_criteria(freq_source if freq_source else None)
 
     # In silico consensus
     predictors = {}
@@ -392,7 +412,7 @@ def gnomad_agent_node(state: VariantState) -> dict[str, Any]:
         "ref": ref_allele,
         "alt": alt_allele,
         "gnomad_variant_id": gnomad_variant_id or ((gnomad_data or {}).get("variant_id")),
-        # Allele frequencies
+        # Allele frequencies — overall dataset
         "allele_frequency": {
             "global_af": (gnomad_data or {}).get("global_af"),
             "exome": (gnomad_data or {}).get("exome"),
@@ -402,6 +422,16 @@ def gnomad_agent_node(state: VariantState) -> dict[str, Any]:
             "max_pop_af": (gnomad_data or {}).get("max_pop_af", 0),
             "max_pop_name": (gnomad_data or {}).get("max_pop_name", ""),
             "variant_in_gnomad": gnomad_data is not None,
+        },
+        # Non-cancer subset (for ACMG frequency criteria)
+        "non_cancer": {
+            "global_af": (non_cancer_data or {}).get("global_af"),
+            "exome": (non_cancer_data or {}).get("exome"),
+            "genome": (non_cancer_data or {}).get("genome"),
+            "populations": (non_cancer_data or {}).get("populations", {}),
+            "hom": (non_cancer_data or {}).get("hom", 0),
+            "dataset": non_cancer_dataset,
+            "available": non_cancer_data is not None,
         },
         # In silico predictors
         "insilico_predictors": predictors,
