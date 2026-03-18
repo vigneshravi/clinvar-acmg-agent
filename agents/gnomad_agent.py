@@ -246,9 +246,25 @@ def gnomad_agent_node(state: VariantState) -> dict[str, Any]:
                     vcf_string = entry.get("vcf_string", "")
                     if vcf_string and "-" in vcf_string:
                         gnomad_variant_id = vcf_string
-                        logger.info("gnomad_agent: VEP vcf_string = %s", vcf_string)
-                    logger.info("gnomad_agent: VEP resolved to %s:%s %s>%s",
-                                chrom, pos, ref_allele, alt_allele)
+                        # Parse VCF-normalized coords for state
+                        vcf_parts = vcf_string.split("-")
+                        if len(vcf_parts) == 4:
+                            chrom = vcf_parts[0]
+                            pos = int(vcf_parts[1])
+                            ref_allele = vcf_parts[2]
+                            alt_allele = vcf_parts[3]
+
+                    # Store strand from VEP
+                    strand = entry.get("strand")
+
+                    # Write coordinates back to state
+                    updates["chrom"] = chrom
+                    updates["pos"] = pos
+                    updates["ref"] = ref_allele
+                    updates["alt"] = alt_allele
+
+                    logger.info("gnomad_agent: VEP resolved to %s:%s %s>%s (strand=%s)",
+                                chrom, pos, ref_allele, alt_allele, strand)
             except Exception as e:
                 logger.warning("gnomad_agent: VEP resolution failed: %s", e)
 
@@ -357,7 +373,12 @@ def gnomad_agent_node(state: VariantState) -> dict[str, Any]:
     gnomad_result: dict[str, Any] = {
         "source": "gnomAD GraphQL + MyVariant.info",
         "rsid": rsid,
-        "coordinates": f"{chrom}:{pos} {ref_allele}>{alt_allele}",
+        "coordinates": f"chr{str(chrom).lstrip('chr')}:{pos} {ref_allele}>{alt_allele}" if chrom and pos else None,
+        "chrom": str(chrom).lstrip("chr") if chrom else None,
+        "pos": pos,
+        "ref": ref_allele,
+        "alt": alt_allele,
+        "gnomad_variant_id": gnomad_variant_id or ((gnomad_data or {}).get("variant_id")),
         # Allele frequencies
         "allele_frequency": {
             "global_af": (gnomad_data or {}).get("global_af"),

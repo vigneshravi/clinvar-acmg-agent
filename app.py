@@ -364,6 +364,29 @@ if "final_state" in st.session_state:
             conservation = gnomad.get("conservation", {})
             acmg_crit = gnomad.get("acmg_criteria", {})
 
+            # Genomic coordinates bar
+            coord_str = gnomad.get("coordinates", "")
+            gn_vid = gnomad.get("gnomad_variant_id", "")
+            rsid_val = gnomad.get("rsid", "")
+
+            coord_parts = []
+            if coord_str:
+                coord_parts.append(f"**Coordinates:** {coord_str}")
+            if gn_vid:
+                coord_parts.append(f"**gnomAD ID:** {gn_vid}")
+            if rsid_val:
+                coord_parts.append(f"**rsID:** {rsid_val}")
+            # Get strand from transcript annotation
+            if all_tx:
+                for t in all_tx:
+                    tid = t.get("nm_accession") or t.get("enst_accession")
+                    if tid == sel_tx and t.get("strand") is not None:
+                        strand_str = "+" if t["strand"] == 1 else "-" if t["strand"] == -1 else str(t["strand"])
+                        coord_parts.append(f"**Strand:** {strand_str}")
+                        break
+            if coord_parts:
+                st.markdown(" | ".join(coord_parts))
+
             # Frequency summary
             st.markdown("#### gnomAD Allele Frequencies")
             if af_data.get("variant_in_gnomad"):
@@ -378,8 +401,12 @@ if "final_state" in st.session_state:
                 with fc3:
                     st.metric("Homozygotes", af_data.get("hom", 0))
                 with fc4:
-                    rsid = gnomad.get("rsid", "")
-                    st.metric("rsID", rsid if rsid else "N/A")
+                    # Show exome and genome AC/AN
+                    exome = af_data.get("exome") or {}
+                    genome = af_data.get("genome") or {}
+                    exome_str = f"Exome: {exome.get('ac', 0)}/{exome.get('an', 0)}" if exome.get("an") else ""
+                    genome_str = f"Genome: {genome.get('ac', 0)}/{genome.get('an', 0)}" if genome.get("an") else ""
+                    st.metric("AC/AN", exome_str or genome_str or "N/A")
 
                 # Population breakdown table
                 pops = af_data.get("populations", {})
