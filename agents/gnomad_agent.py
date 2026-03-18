@@ -328,22 +328,37 @@ def gnomad_agent_node(state: VariantState) -> dict[str, Any]:
         logger.warning("gnomAD query failed: %s", e)
         warnings.append(f"gnomAD query failed: {str(e)}")
 
-    # ---- Step 1b: Query non-cancer dataset ----
-    # Non-cancer subset excludes cancer cohorts (TCGA etc.) — use this for
-    # ACMG frequency criteria since cancer samples may have somatic mutations
-    non_cancer_data = None
-    non_cancer_dataset = {
-        "GRCh38": "gnomad_r3_non_cancer",   # v3.1.2 genomes, non-cancer
-        "GRCh37": "gnomad_r2_1_non_cancer",  # v2.1.1, non-cancer
-    }.get(genome_build)
+    # ---- Step 1b: Query non-cancer and controls datasets ----
+    # GRCh38: gnomAD v3.1.2 overall, non-cancer, controls/biobanks (genomes)
+    # GRCh37: gnomAD v2.1.1 overall, non-cancer, controls (exomes+genomes)
+    cohort_datasets = {
+        "GRCh38": {
+            "overall": "gnomad_r3",
+            "non_cancer": "gnomad_r3_non_cancer",
+            "controls": "gnomad_r3_controls_and_biobanks",
+        },
+        "GRCh37": {
+            "overall": "gnomad_r2_1",
+            "non_cancer": "gnomad_r2_1_non_cancer",
+            "controls": "gnomad_r2_1_controls",
+        },
+    }.get(genome_build, {})
 
-    if non_cancer_dataset and rsid:
+    cohort_data: dict[str, Any] = {"overall": gnomad_data}
+
+    for cohort_name in ["non_cancer", "controls"]:
+        ds = cohort_datasets.get(cohort_name)
+        if not ds or not rsid:
+            cohort_data[cohort_name] = None
+            continue
         try:
-            non_cancer_data = query_gnomad_by_rsid(rsid, genome_build, non_cancer_dataset)
-            if non_cancer_data:
-                logger.info("gnomAD non-cancer: AF=%s", non_cancer_data.get("global_af"))
+            result = query_gnomad_by_rsid(rsid, genome_build, ds)
+            cohort_data[cohort_name] = result
+            if result:
+                logger.info("gnomAD %s: AF=%s", cohort_name, result.get("global_af"))
         except Exception as e:
-            logger.warning("gnomAD non-cancer query failed: %s", e)
+            logger.warning("gnomAD %s query failed: %s", cohort_name, e)
+            cohort_data[cohort_name] = None
 
     # ---- Step 2: Query MyVariant.info for dbNSFP + CADD ----
     myvariant_data = None
@@ -382,9 +397,10 @@ def gnomad_agent_node(state: VariantState) -> dict[str, Any]:
                 "populations": af_source.get("populations", {}),
             }
 
-    # Use non-cancer AF for ACMG frequency criteria (BA1, BS1, PM2)
-    # since cancer cohort samples may contain somatic mutations
-    freq_source = non_cancer_data if non_cancer_data else af_source
+    # Use controls AF for ACMG frequency criteria (BA1, BS1, PM2)
+    # Controls/biobanks is the cleanest population for germline interpretation
+    controls_data = cohort_data.get("controls")
+    freq_source = controls_data if controls_data else af_source
     freq_criteria = _compute_frequency_criteria(freq_source if freq_source else None)
 
     # In silico consensus
@@ -398,8 +414,23 @@ def gnomad_agent_node(state: VariantState) -> dict[str, Any]:
         conservation = myvariant_data.get("conservation", {})
 
     # ---- Step 4: Build the gnomad state dict ----
-    # Determine which dataset was actually used
-    from tools.gnomad_graphql import _default_dataset
+    from tools.gnomad_graphql import _default_dataset, GNOMAD_DATASETS
+
+    def _cohort_block(data: Any) -> dict[str, Any]:
+        """Extract a standardized cohort block from gnomAD query result."""
+        if not data:
+            return {"available": False}
+        return {
+            "available": True,
+            "global_af": data.get("global_af"),
+            "exome": data.get("exome"),
+            "genome": data.get("genome"),
+            "populations": data.get("populations", {}),
+            "hom": data.get("hom", 0),
+            "dataset": data.get("dataset", ""),
+            "dataset_label": GNOMAD_DATASETS.get(data.get("dataset", ""), {}).get("label", ""),
+        }
+
     used_dataset = (gnomad_data or {}).get("dataset") or _default_dataset(genome_build)
 
     gnomad_result: dict[str, Any] = {
@@ -412,7 +443,12 @@ def gnomad_agent_node(state: VariantState) -> dict[str, Any]:
         "ref": ref_allele,
         "alt": alt_allele,
         "gnomad_variant_id": gnomad_variant_id or ((gnomad_data or {}).get("variant_id")),
-        # Allele frequencies — overall dataset
+        "variant_in_gnomad": gnomad_data is not None,
+        # Three cohorts side by side
+        "overall": _cohort_block(cohort_data.get("overall")),
+        "non_cancer": _cohort_block(cohort_data.get("non_cancer")),
+        "controls": _cohort_block(cohort_data.get("controls")),
+        # Keep allele_frequency for backward compat (points to overall)
         "allele_frequency": {
             "global_af": (gnomad_data or {}).get("global_af"),
             "exome": (gnomad_data or {}).get("exome"),
@@ -422,16 +458,6 @@ def gnomad_agent_node(state: VariantState) -> dict[str, Any]:
             "max_pop_af": (gnomad_data or {}).get("max_pop_af", 0),
             "max_pop_name": (gnomad_data or {}).get("max_pop_name", ""),
             "variant_in_gnomad": gnomad_data is not None,
-        },
-        # Non-cancer subset (for ACMG frequency criteria)
-        "non_cancer": {
-            "global_af": (non_cancer_data or {}).get("global_af"),
-            "exome": (non_cancer_data or {}).get("exome"),
-            "genome": (non_cancer_data or {}).get("genome"),
-            "populations": (non_cancer_data or {}).get("populations", {}),
-            "hom": (non_cancer_data or {}).get("hom", 0),
-            "dataset": non_cancer_dataset,
-            "available": non_cancer_data is not None,
         },
         # In silico predictors
         "insilico_predictors": predictors,

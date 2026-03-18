@@ -309,68 +309,96 @@ if "final_state" in st.session_state:
                 st.markdown(" &nbsp;|&nbsp; ".join(link_parts))
 
             st.markdown("#### gnomAD Allele Frequencies")
-            nc = gnomad.get("non_cancer", {})
-            nc_avail = nc.get("available", False)
 
-            if af_data.get("variant_in_gnomad"):
-                # Summary line: Overall vs Non-Cancer
-                gaf = af_data.get("global_af")
-                nc_gaf = nc.get("global_af")
-                exome = af_data.get("exome") or {}
-                genome = af_data.get("genome") or {}
-                nc_exome = nc.get("exome") or {}
-                nc_genome = nc.get("genome") or {}
+            # Three cohorts: overall, non-cancer, controls
+            ov_c = gnomad.get("overall", {})
+            nc_c = gnomad.get("non_cancer", {})
+            ct_c = gnomad.get("controls", {})
+            ov_avail = ov_c.get("available", False)
+            nc_avail = nc_c.get("available", False)
+            ct_avail = ct_c.get("available", False)
 
-                summary = f"**Global AF:** {gaf:.6f}"
-                if nc_avail and nc_gaf is not None:
-                    summary += f" &nbsp;|&nbsp; **Non-cancer AF:** {nc_gaf:.6f}"
-                summary += f" &nbsp;|&nbsp; **Hom:** {af_data.get('hom', 0)}"
+            if gnomad.get("variant_in_gnomad") or af_data.get("variant_in_gnomad"):
+                # Helper to format AF
+                def _af(val):
+                    return f"{val:.6f}" if val is not None else "\u2014"
+
+                def _ac_an(block, key):
+                    """Format AC/AN for exome or genome."""
+                    sub = (block or {}).get(key) or {}
+                    if sub.get("an"):
+                        return f"{sub.get('ac',0)}/{sub.get('an',0)}"
+                    return "\u2014"
+
+                # Summary line: all 3 cohorts
+                parts = []
+                if ov_avail:
+                    parts.append(f"**Overall AF:** {_af(ov_c.get('global_af'))}")
                 if nc_avail:
-                    summary += f" / {nc.get('hom', 0)} (non-cancer)"
-                if exome.get("an"):
-                    summary += f" &nbsp;|&nbsp; **Exome:** {exome.get('ac',0)}/{exome.get('an',0)}"
-                    if nc_exome.get("an"):
-                        summary += f" \u2014 NC: {nc_exome.get('ac',0)}/{nc_exome.get('an',0)}"
-                if genome.get("an"):
-                    summary += f" &nbsp;|&nbsp; **Genome:** {genome.get('ac',0)}/{genome.get('an',0)}"
-                    if nc_genome.get("an"):
-                        summary += f" \u2014 NC: {nc_genome.get('ac',0)}/{nc_genome.get('an',0)}"
-                st.markdown(summary)
+                    parts.append(f"**Non-cancer AF:** {_af(nc_c.get('global_af'))}")
+                if ct_avail:
+                    parts.append(f"**Controls AF:** {_af(ct_c.get('global_af'))}")
+                st.markdown(" &nbsp;|&nbsp; ".join(parts))
 
-                # Population table: Overall + Non-Cancer side by side
-                pops = af_data.get("populations", {})
-                nc_pops = nc.get("populations", {})
-                if pops:
+                # Exome / Genome / Hom breakdown
+                detail_rows = []
+                for label, block in [("Overall", ov_c), ("Non-cancer", nc_c), ("Controls", ct_c)]:
+                    if not block.get("available"):
+                        continue
+                    ds_label = block.get("dataset_label", label)
+                    detail_rows.append({
+                        "Cohort": ds_label,
+                        "Global AF": _af(block.get("global_af")),
+                        "Exome AC/AN": _ac_an(block, "exome"),
+                        "Genome AC/AN": _ac_an(block, "genome"),
+                        "Hom": block.get("hom", 0),
+                    })
+                if detail_rows:
+                    st.dataframe(detail_rows, use_container_width=True, hide_index=True)
+
+                # Population table: all 3 cohorts side by side
+                # Use the first available cohort for population list
+                ref_pops = (ov_c if ov_avail else nc_c if nc_avail else ct_c).get("populations", {})
+                nc_pops = nc_c.get("populations", {})
+                ct_pops = ct_c.get("populations", {})
+                ov_pops = ov_c.get("populations", {})
+
+                if ref_pops:
                     pop_rows = []
                     for pid in POP_ORDER:
-                        pd = pops.get(pid)
-                        if pd and isinstance(pd, dict):
-                            row = {
-                                "Population": pd.get("name", pid),
-                                "AF": f"{pd.get('af', 0):.6f}",
-                                "AC": pd.get("ac", 0),
-                                "AN": pd.get("an", 0),
-                                "Hom": pd.get("hom", 0),
-                            }
-                            # Add non-cancer columns if available
-                            if nc_avail:
-                                nc_pd = nc_pops.get(pid, {})
-                                if isinstance(nc_pd, dict) and nc_pd.get("an", 0) > 0:
-                                    row["NC AF"] = f"{nc_pd.get('af', 0):.6f}"
-                                    row["NC AC"] = nc_pd.get("ac", 0)
-                                    row["NC AN"] = nc_pd.get("an", 0)
-                                else:
-                                    row["NC AF"] = "\u2014"
-                                    row["NC AC"] = "\u2014"
-                                    row["NC AN"] = "\u2014"
-                            pop_rows.append(row)
+                        # Find population data from any cohort
+                        name = POP_NAMES.get(pid, pid)
+                        ov_pd = ov_pops.get(pid, {}) if isinstance(ov_pops.get(pid), dict) else {}
+                        nc_pd = nc_pops.get(pid, {}) if isinstance(nc_pops.get(pid), dict) else {}
+                        ct_pd = ct_pops.get(pid, {}) if isinstance(ct_pops.get(pid), dict) else {}
+
+                        if not (ov_pd or nc_pd or ct_pd):
+                            continue
+
+                        row = {"Population": name}
+                        # Overall
+                        if ov_avail:
+                            row["AF"] = _af(ov_pd.get("af")) if ov_pd else "\u2014"
+                            row["AC"] = ov_pd.get("ac", "\u2014") if ov_pd else "\u2014"
+                            row["AN"] = ov_pd.get("an", "\u2014") if ov_pd else "\u2014"
+                        # Non-cancer
+                        if nc_avail:
+                            row["NC AF"] = _af(nc_pd.get("af")) if nc_pd else "\u2014"
+                            row["NC AC"] = nc_pd.get("ac", "\u2014") if nc_pd else "\u2014"
+                        # Controls
+                        if ct_avail:
+                            row["Ctrl AF"] = _af(ct_pd.get("af")) if ct_pd else "\u2014"
+                            row["Ctrl AC"] = ct_pd.get("ac", "\u2014") if ct_pd else "\u2014"
+
+                        pop_rows.append(row)
+
                     if pop_rows:
                         st.dataframe(pop_rows, use_container_width=True, hide_index=True)
             else:
                 st.info("Variant **not found** in gnomAD — absent from population controls (supports PM2)")
 
-            # ACMG frequency flags (evaluated on non-cancer AF)
-            acmg_note = " *(based on non-cancer AF)*" if nc_avail else ""
+            # ACMG frequency flags (evaluated on controls AF)
+            acmg_note = " *(based on controls AF)*" if ct_avail else ""
             st.markdown(
                 f"{'\u2705' if acmg_crit.get('BA1_met') else '\u274C'} **BA1** (AF>5%) &nbsp;&nbsp; "
                 f"{'\u2705' if acmg_crit.get('BS1_met') else '\u274C'} **BS1** (AF>1%) &nbsp;&nbsp; "
@@ -463,138 +491,119 @@ if "final_state" in st.session_state:
             eth_with_data = [p for p in case_data if p != "overall"]
             n_eth_with_data = len(eth_with_data)
 
-            # Dataset selection
-            from tools.gnomad_graphql import GNOMAD_DATASETS
-            build = fs.get("genome_build", "GRCh38")
-            avail_ds = [d for d, info in GNOMAD_DATASETS.items() if info["build"] == build]
-            ds_labels = {d: f"{GNOMAD_DATASETS[d]['label']} ({GNOMAD_DATASETS[d]['samples']:,})" for d in avail_ds}
-            selected_ds = st.multiselect("gnomAD control datasets", options=avail_ds,
-                                          default=[avail_ds[0]] if avail_ds else [],
-                                          format_func=lambda x: ds_labels.get(x, x), key="gnomad_datasets")
-
             run_cc = st.button("Run Case-Control Analysis", key="run_cc")
 
             if run_cc and overall_total > 0:
                 from tools.case_control import run_case_control_analysis
-                from tools.gnomad_graphql import query_gnomad_by_rsid
-                rsid = gnomad.get("rsid", "")
 
-                for ds_id in selected_ds:
-                    ds_label = GNOMAD_DATASETS.get(ds_id, {}).get("label", ds_id)
-                    gn_link = _gnomad_link(gnomad.get("gnomad_variant_id", ""), ds_id)
-                    st.markdown(f"#### {ds_label} {gn_link}")
+                # Use controls cohort (already fetched by gnomad_agent)
+                ctrl_block = gnomad.get("controls", {})
+                if not ctrl_block.get("available"):
+                    st.warning("Controls dataset not available — using overall gnomAD")
+                    ctrl_block = gnomad.get("overall", {})
 
-                    with st.spinner(f"Querying {ds_label}..."):
-                        ds_data = query_gnomad_by_rsid(rsid, build, ds_id) if rsid else None
+                # Build gnomad_data-like dict from controls block
+                ctrl_exome = ctrl_block.get("exome") or {}
+                ctrl_genome = ctrl_block.get("genome") or {}
+                ds_data = {
+                    "ac": ctrl_exome.get("ac", 0) + ctrl_genome.get("ac", 0),
+                    "an": ctrl_exome.get("an", 0) + ctrl_genome.get("an", 0),
+                    "populations": ctrl_block.get("populations", {}),
+                    "dataset_label": ctrl_block.get("dataset_label", "Controls"),
+                }
 
-                    if not ds_data:
-                        st.warning(f"Variant not found in {ds_label}")
-                        continue
+                ds_label = ctrl_block.get("dataset_label", "Controls")
+                ctrl_ds = ctrl_block.get("dataset", gnomad.get("dataset", ""))
+                gn_link = _gnomad_link(gnomad.get("gnomad_variant_id", ""), ctrl_ds)
+                st.markdown(f"**Control cohort:** {ds_label} {gn_link}")
 
-                    ds_data["dataset_label"] = ds_label
+                analysis_case_data = {"overall": case_data["overall"]}
+                analysis_case_data.update(eth_case_data)
 
-                    # Build case_data for this analysis:
-                    # Only include ethnicities with user-provided data
-                    analysis_case_data = {"overall": case_data["overall"]}
-                    analysis_case_data.update(eth_case_data)
+                cc_result = run_case_control_analysis(analysis_case_data, ds_data)
 
-                    cc_result = run_case_control_analysis(analysis_case_data, ds_data)
+                # Overall Fisher's
+                ov = cc_result["overall_fishers"]
+                or_str = f"{ov['odds_ratio']:.2f}" if ov.get("odds_ratio") and ov["odds_ratio"] != float("inf") else "Inf" if ov.get("odds_ratio") == float("inf") else "N/A"
+                pv = ov.get("p_value")
+                pv_str = f"{pv:.2e}" if pv and pv < 0.001 else f"{pv:.4f}" if pv else "N/A"
+                sig_color = "red" if ov.get("significant") else "green"
+                st.markdown(
+                    f"**Overall Fisher's:** Case AF={ov['case_af']:.4f} vs Control AF={ov['control_af']:.6f} "
+                    f"| OR={or_str} | :{sig_color}[p={pv_str}]"
+                )
 
-                    # Overall Fisher's (always runs)
-                    ov = cc_result["overall_fishers"]
-                    or_str = f"{ov['odds_ratio']:.2f}" if ov.get("odds_ratio") and ov["odds_ratio"] != float("inf") else "Inf" if ov.get("odds_ratio") == float("inf") else "N/A"
-                    pv = ov.get("p_value")
-                    pv_str = f"{pv:.2e}" if pv and pv < 0.001 else f"{pv:.4f}" if pv else "N/A"
-                    sig_color = "red" if ov.get("significant") else "green"
-                    st.markdown(
-                        f"**Overall Fisher's:** Case AF={ov['case_af']:.4f} vs Control AF={ov['control_af']:.6f} "
-                        f"| OR={or_str} | :{sig_color}[p={pv_str}]"
-                    )
+                # Per-ancestry table
+                anc = cc_result.get("ancestry_fishers", [])
+                if anc:
+                    rows = []
+                    plot_data = []
+                    for ar in anc:
+                        or_v = ar.get("odds_ratio")
+                        pv = ar.get("p_value")
+                        pop_id = ar.get("population_id", "")
+                        has_user_data = pop_id in eth_case_data
+                        source_tag = "" if has_user_data else " (using overall)"
 
-                    # Per-ancestry table
-                    anc = cc_result.get("ancestry_fishers", [])
-                    if anc:
-                        rows = []
-                        plot_data = []  # only user-specified ethnicities
-                        for ar in anc:
-                            or_v = ar.get("odds_ratio")
-                            pv = ar.get("p_value")
-                            pop_id = ar.get("population_id", "")
-                            has_user_data = pop_id in eth_case_data
-                            source_tag = "" if has_user_data else " (using overall)"
+                        rows.append({
+                            "Population": ar.get("population", "") + source_tag,
+                            "Case (carriers/total)": f"{ar['case_ac']}/{ar['case_an']//2}",
+                            "Control (AC/AN)": f"{ar['control_ac']}/{ar['control_an']}",
+                            "Case AF": f"{ar['case_af']:.4f}",
+                            "Control AF": f"{ar['control_af']:.6f}",
+                            "OR": f"{or_v:.2f}" if or_v and or_v != float("inf") else "Inf",
+                            "p-value": f"{pv:.2e}" if pv and pv < 0.001 else f"{pv:.4f}" if pv else "N/A",
+                            "Sig": "\u2705" if ar.get("significant") else "",
+                        })
 
-                            rows.append({
-                                "Population": ar.get("population", "") + source_tag,
-                                "Case (carriers/total)": f"{ar['case_ac']}/{ar['case_an']//2}",
-                                "Control (AC/AN)": f"{ar['control_ac']}/{ar['control_an']}",
-                                "Case AF": f"{ar['case_af']:.4f}",
-                                "Control AF": f"{ar['control_af']:.6f}",
-                                "OR": f"{or_v:.2f}" if or_v and or_v != float("inf") else "Inf",
-                                "p-value": f"{pv:.2e}" if pv and pv < 0.001 else f"{pv:.4f}" if pv else "N/A",
-                                "Sig": "\u2705" if ar.get("significant") else "",
+                        if has_user_data and or_v and or_v != float("inf") and or_v > 0:
+                            plot_data.append({
+                                "pop": ar.get("population", ""),
+                                "or": or_v,
+                                "ci_lo": ar.get("ci_lower", or_v * 0.5),
+                                "ci_hi": ar.get("ci_upper", or_v * 2),
+                                "sig": ar.get("significant", False),
                             })
 
-                            # Forest plot: only user-specified ethnicities
-                            if has_user_data and or_v and or_v != float("inf") and or_v > 0:
-                                plot_data.append({
-                                    "pop": ar.get("population", ""),
-                                    "or": or_v,
-                                    "ci_lo": ar.get("ci_lower", or_v * 0.5),
-                                    "ci_hi": ar.get("ci_upper", or_v * 2),
-                                    "sig": ar.get("significant", False),
-                                })
+                    st.dataframe(rows, use_container_width=True, hide_index=True)
 
-                        st.dataframe(rows, use_container_width=True, hide_index=True)
+                    # Forest plot — only ethnicities with user data
+                    if plot_data:
+                        import plotly.graph_objects as go
+                        fig = go.Figure()
+                        pops_sorted = sorted(plot_data, key=lambda x: x["or"])
+                        fig.add_trace(go.Scatter(
+                            x=[d["or"] for d in pops_sorted],
+                            y=[d["pop"] for d in pops_sorted],
+                            mode="markers",
+                            marker=dict(size=10, color=["#ff4b4b" if d["sig"] else "#888" for d in pops_sorted]),
+                            error_x=dict(
+                                type="data", symmetric=False,
+                                array=[d["ci_hi"] - d["or"] for d in pops_sorted],
+                                arrayminus=[d["or"] - d["ci_lo"] for d in pops_sorted],
+                            ),
+                            hovertemplate="%{y}<br>OR=%{x:.2f}<extra></extra>",
+                        ))
+                        fig.add_vline(x=1, line_dash="dash", line_color="gray")
+                        fig.update_layout(
+                            title="Forest Plot — OR by Ancestry (user-specified, vs controls)",
+                            xaxis_title="Odds Ratio (log scale)", xaxis_type="log",
+                            height=max(300, len(pops_sorted) * 50 + 100),
+                            showlegend=False, margin=dict(l=200), font=dict(size=13),
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
 
-                        # Forest plot — only ethnicities with user data
-                        if plot_data:
-                            import plotly.graph_objects as go
-                            fig = go.Figure()
-                            pops_sorted = sorted(plot_data, key=lambda x: x["or"])
-                            y_labels = [d["pop"] for d in pops_sorted]
-                            x_vals = [d["or"] for d in pops_sorted]
-                            ci_lo = [d["ci_lo"] for d in pops_sorted]
-                            ci_hi = [d["ci_hi"] for d in pops_sorted]
-                            colors = ["#ff4b4b" if d["sig"] else "#888" for d in pops_sorted]
-
-                            fig.add_trace(go.Scatter(
-                                x=x_vals, y=y_labels, mode="markers",
-                                marker=dict(size=10, color=colors),
-                                error_x=dict(
-                                    type="data", symmetric=False,
-                                    array=[h - v for v, h in zip(x_vals, ci_hi)],
-                                    arrayminus=[v - l for v, l in zip(x_vals, ci_lo)],
-                                ),
-                                hovertemplate="%{y}<br>OR=%{x:.2f}<extra></extra>",
-                            ))
-                            fig.add_vline(x=1, line_dash="dash", line_color="gray")
-                            fig.update_layout(
-                                title="Forest Plot — Odds Ratio by Ancestry (user-specified only)",
-                                xaxis_title="Odds Ratio (log scale)",
-                                xaxis_type="log",
-                                height=max(300, len(pops_sorted) * 50 + 100),
-                                showlegend=False,
-                                margin=dict(l=200),
-                                font=dict(size=13),
-                            )
-                            st.plotly_chart(fig, use_container_width=True)
-
-                    # Weighted GLM — only if >= 2 ethnicities have user data
-                    if n_eth_with_data >= 2:
-                        glm = cc_result.get("weighted_glm", {})
-                        if glm.get("p_value") is not None:
-                            glm_pv = glm["p_value"]
-                            glm_color = "red" if glm_pv < 0.05 else "green"
-                            st.markdown(f"**Weighted GLM:** {glm['interpretation']} :{glm_color}[p={glm_pv:.4f}]")
-                        elif glm.get("interpretation"):
-                            st.markdown(f"**Weighted GLM:** {glm['interpretation']}")
-                    elif use_eth:
-                        if n_eth_with_data == 1:
-                            st.info("Provide at least 2 ethnicities with data to enable weighted GLM.")
-                        else:
-                            st.info("Provide ethnicity-specific counts to enable weighted GLM.")
-
-                    st.divider()
+                # Weighted GLM
+                if n_eth_with_data >= 2:
+                    glm = cc_result.get("weighted_glm", {})
+                    if glm.get("p_value") is not None:
+                        glm_pv = glm["p_value"]
+                        glm_color = "red" if glm_pv < 0.05 else "green"
+                        st.markdown(f"**Weighted GLM:** {glm['interpretation']} :{glm_color}[p={glm_pv:.4f}]")
+                    elif glm.get("interpretation"):
+                        st.markdown(f"**Weighted GLM:** {glm['interpretation']}")
+                elif use_eth:
+                    st.info("Provide at least 2 ethnicities with data to enable weighted GLM." if n_eth_with_data < 2 else "")
 
     # --- ACMG Criteria ---
     with st.expander("\U0001f3af ACMG Criteria", expanded=True):
