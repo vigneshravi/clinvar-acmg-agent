@@ -221,7 +221,14 @@ def gnomad_agent_node(state: VariantState) -> dict[str, Any]:
     # VCF-style gnomAD variant ID (chrom-pos-ref-alt format)
     gnomad_variant_id = None
 
-    # If we don't have coordinates, resolve via VEP (also gets vcf_string)
+    # If coordinates already present (from user input or input_parser),
+    # use them directly — they're already in VCF format, no normalization needed
+    if chrom and pos and ref_allele and alt_allele:
+        chrom_clean = str(chrom).lstrip("chr")
+        gnomad_variant_id = f"{chrom_clean}-{pos}-{ref_allele}-{alt_allele}"
+        logger.info("gnomad_agent: using pre-resolved coordinates %s", gnomad_variant_id)
+
+    # If we don't have coordinates, resolve via VEP
     if not (chrom and pos and ref_allele and alt_allele):
         hgvs = state.get("hgvs_on_transcript", "")
         if hgvs:

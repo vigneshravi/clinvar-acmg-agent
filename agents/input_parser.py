@@ -143,8 +143,17 @@ def input_parser_node(state: VariantState) -> dict[str, Any]:
     if resolution.get("gene_full_name"):
         updates["gene_full_name"] = resolution["gene_full_name"]
 
-    # Store left-aligned genomic coordinates from VEP
-    if resolution.get("chrom"):
+    # Store genomic coordinates
+    # For coordinate input: use the user's original values (already VCF-normalized)
+    # For HGVS input: use left-aligned coordinates from VEP
+    if chrom and pos and ref and alt:
+        # User provided coordinates — trust them as-is
+        updates["chrom"] = str(chrom).lstrip("chr")
+        updates["pos"] = pos
+        updates["ref"] = ref
+        updates["alt"] = alt
+    elif resolution.get("chrom"):
+        # VEP-resolved coordinates (already left-aligned by resolve_transcripts)
         updates["chrom"] = resolution["chrom"]
         updates["pos"] = resolution["pos"]
         updates["ref"] = resolution["ref"]
