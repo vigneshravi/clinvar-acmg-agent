@@ -302,7 +302,8 @@ if "final_state" in st.session_state:
             link_parts = []
             if coord_str: link_parts.append(f"**Coords:** {coord_str}")
             if strand_info: link_parts.append(f"**Strand:** {strand_info}")
-            if gn_vid: link_parts.append(f"**gnomAD:** {_gnomad_link(gn_vid)}")
+            gn_dataset = gnomad.get("dataset", "gnomad_r4")
+            if gn_vid: link_parts.append(f"**gnomAD:** {_gnomad_link(gn_vid, gn_dataset)}")
             if rsid_val: link_parts.append(f"**dbSNP:** {_dbsnp_link(rsid_val)}")
             if link_parts:
                 st.markdown(" &nbsp;|&nbsp; ".join(link_parts))

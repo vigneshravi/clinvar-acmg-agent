@@ -378,9 +378,14 @@ def gnomad_agent_node(state: VariantState) -> dict[str, Any]:
         conservation = myvariant_data.get("conservation", {})
 
     # ---- Step 4: Build the gnomad state dict ----
+    # Determine which dataset was actually used
+    from tools.gnomad_graphql import _default_dataset
+    used_dataset = (gnomad_data or {}).get("dataset") or _default_dataset(genome_build)
+
     gnomad_result: dict[str, Any] = {
         "source": "gnomAD GraphQL + MyVariant.info",
         "rsid": rsid,
+        "dataset": used_dataset,
         "coordinates": f"chr{str(chrom).lstrip('chr')}:{pos} {ref_allele}>{alt_allele}" if chrom and pos else None,
         "chrom": str(chrom).lstrip("chr") if chrom else None,
         "pos": pos,

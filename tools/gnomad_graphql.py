@@ -158,15 +158,22 @@ def _parse_populations(pop_list: list) -> dict[str, dict]:
     return pops
 
 
+def _default_dataset(genome_build: str) -> str:
+    """Pick the default gnomAD dataset for a genome build."""
+    return "gnomad_r2_1" if genome_build == "GRCh37" else "gnomad_r4"
+
+
 def query_gnomad_variant(
     chrom: str,
     pos: int,
     ref: str,
     alt: str,
     genome_build: str = "GRCh38",
-    dataset: str = "gnomad_r4",
+    dataset: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """Query gnomAD for a variant by coordinates."""
+    if dataset is None:
+        dataset = _default_dataset(genome_build)
     chrom_clean = str(chrom).lstrip("chr")
     variant_id = f"{chrom_clean}-{pos}-{ref}-{alt}"
 
@@ -192,12 +199,14 @@ def query_gnomad_variant(
 def query_gnomad_by_rsid(
     rsid: str,
     genome_build: str = "GRCh38",
-    dataset: str = "gnomad_r4",
+    dataset: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """Query gnomAD by rsID.
 
     Falls back to variant_search if rsID maps to multiple variants.
     """
+    if dataset is None:
+        dataset = _default_dataset(genome_build)
     query = (
         f'{{variant(rsid: "{rsid}", dataset: {dataset}) {{'
         f'variant_id rsid '
