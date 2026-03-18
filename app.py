@@ -1,7 +1,7 @@
 """Streamlit UI for ClinVar ACMG Variant Classifier — LangGraph multi-agent."""
 
 import json
-import threading
+import math
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -12,164 +12,145 @@ from cache.cache_manager import CacheManager
 from graph.graph import run_graph_stream
 from graph.state import VariantState, make_initial_state
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 _cache = CacheManager()
 
+# ---------------------------------------------------------------------------
+# Consistent CSS — no big/small font inconsistency
+# ---------------------------------------------------------------------------
+st.markdown("""
+<style>
+    /* Override st.metric to use consistent sizing */
+    [data-testid="stMetricValue"] { font-size: 1rem !important; }
+    [data-testid="stMetricLabel"] { font-size: 0.85rem !important; }
+    [data-testid="stMetricDelta"] { font-size: 0.8rem !important; }
+    /* Consistent markdown sizing */
+    .stMarkdown p { font-size: 0.95rem; }
+    .stMarkdown h4 { font-size: 1.1rem !important; margin-top: 1rem; }
+</style>
+""", unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------------
+# Link helpers
+# ---------------------------------------------------------------------------
+
+def _clinvar_link(variant_id: str) -> str:
+    if not variant_id:
+        return "N/A"
+    return f"[{variant_id}](https://www.ncbi.nlm.nih.gov/clinvar/variation/{variant_id}/)"
+
+def _gnomad_link(variant_id: str, dataset: str = "gnomad_r4") -> str:
+    if not variant_id:
+        return "N/A"
+    return f"[{variant_id}](https://gnomad.broadinstitute.org/variant/{variant_id}?dataset={dataset})"
+
+def _dbsnp_link(rsid: str) -> str:
+    if not rsid:
+        return "N/A"
+    return f"[{rsid}](https://www.ncbi.nlm.nih.gov/snp/{rsid})"
+
+def _gene_link(gene: str) -> str:
+    if not gene:
+        return "N/A"
+    return f"[{gene}](https://www.ncbi.nlm.nih.gov/gene/?term={gene}%5BGENE%5D+AND+human%5BORGN%5D)"
 
 def _get_star_count(review_status: str) -> int:
     if not review_status:
         return 0
     s = review_status.lower()
-    if "practice guideline" in s:
-        return 4
-    if "expert panel" in s:
-        return 3
-    if "multiple submitters, no conflicts" in s:
-        return 2
-    if "single submitter" in s or "conflicting" in s:
-        return 1
+    if "practice guideline" in s: return 4
+    if "expert panel" in s: return 3
+    if "multiple submitters, no conflicts" in s: return 2
+    if "single submitter" in s or "conflicting" in s: return 1
     return 0
 
-
 def _transcript_label(tx: dict) -> str:
-    """Build display label for transcript dropdown."""
     nm = tx.get("nm_accession", "")
     enst = tx.get("enst_accession", "")
-
-    # ID part: NM / ENST
-    if nm and enst:
-        id_part = f"{nm} / {enst}"
-    else:
-        id_part = nm or enst
-
-    # Annotation tags
+    id_part = f"{nm} / {enst}" if nm and enst else (nm or enst)
     tags = []
-    if tx.get("is_mane_select"):
-        tags.append("MANE Select")
-    if tx.get("is_mane_plus_clinical"):
-        tags.append("MANE+Clinical")
-    if tx.get("is_most_reported_pathogenic"):
-        tags.append("Most Reported")
-    if tx.get("is_canonical") and not tx.get("is_mane_select"):
-        tags.append("Canonical")
-
-    # Consequence
+    if tx.get("is_mane_select"): tags.append("MANE Select")
+    if tx.get("is_mane_plus_clinical"): tags.append("MANE+Clinical")
+    if tx.get("is_most_reported_pathogenic"): tags.append("Most Reported")
+    if tx.get("is_canonical") and not tx.get("is_mane_select"): tags.append("Canonical")
     consequence = tx.get("consequence_display", "")
     pos_detail = tx.get("position_detail", "")
-
     parts = [id_part]
-    if tags:
-        parts.append(" \u00b7 ".join(tags))
-    if consequence:
-        parts.append(consequence)
-    if pos_detail:
-        parts.append(pos_detail)
-
+    if tags: parts.append(" \u00b7 ".join(tags))
+    if consequence: parts.append(consequence)
+    if pos_detail: parts.append(pos_detail)
     return " | ".join(parts)
 
-
 NODE_LABELS = {
-    "input_parser": "Parse Input",
-    "supervisor": "Route",
-    "clinvar_agent": "ClinVar",
-    "gnomad_agent": "gnomAD",
-    "pubmed_agent": "PubMed",
-    "alphafold_agent": "AlphaFold",
-    "tcga_agent": "TCGA",
-    "acmg_classifier": "ACMG Classifier",
+    "input_parser": "Parse Input", "supervisor": "Route",
+    "clinvar_agent": "ClinVar", "gnomad_agent": "gnomAD + In Silico",
+    "pubmed_agent": "PubMed", "alphafold_agent": "AlphaFold",
+    "tcga_agent": "TCGA", "acmg_classifier": "ACMG Classifier",
 }
 
+POP_ORDER = ["afr", "amr", "asj", "eas", "fin", "mid", "nfe", "sas", "remaining", "ami"]
+POP_NAMES = {
+    "afr": "African/African American", "amr": "Latino/Admixed American",
+    "asj": "Ashkenazi Jewish", "eas": "East Asian", "fin": "Finnish",
+    "mid": "Middle Eastern", "nfe": "Non-Finnish European", "sas": "South Asian",
+    "remaining": "Remaining", "ami": "Amish",
+}
 
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
-
-st.set_page_config(
-    page_title="ClinVar ACMG Variant Classifier",
-    page_icon="\U0001f9ec",
-    layout="wide",
-)
-
+st.set_page_config(page_title="ClinVar ACMG Variant Classifier", page_icon="\U0001f9ec", layout="wide")
 st.title("\U0001f9ec ClinVar ACMG Variant Classifier")
-st.markdown(
-    "*AI-assisted research tool for variant classification using ACMG/AMP 2015 "
-    "guidelines. Multi-agent LangGraph pipeline. **Not for clinical use.***"
-)
+st.markdown("*AI-assisted variant classification using ACMG/AMP 2015 guidelines. **Not for clinical use.***")
 st.divider()
 
 # ---------------------------------------------------------------------------
-# Input section
+# Input
 # ---------------------------------------------------------------------------
-
-input_method = st.radio(
-    "Input method", ["Gene + HGVS", "Genomic Coordinates"], horizontal=True
-)
-
+input_method = st.radio("Input method", ["Gene + HGVS", "Genomic Coordinates"], horizontal=True)
 genome_build_options = ["GRCh38 / hg38", "GRCh37 / hg19"]
 raw_input_str = ""
 
 if input_method == "Gene + HGVS":
-    col_input, col_build = st.columns([3, 1])
-    with col_input:
-        variant_text = st.text_input(
-            "Gene + HGVS notation",
-            placeholder="e.g. BRCA1 c.5266dupC or NM_007294.4:c.5266dupC",
-            key="hgvs_input",
-        )
-    with col_build:
+    c_in, c_bld = st.columns([3, 1])
+    with c_in:
+        variant_text = st.text_input("Gene + HGVS notation", placeholder="e.g. BRCA1 c.5266dupC", key="hgvs_input")
+    with c_bld:
         genome_build_sel = st.selectbox("Genome build", genome_build_options, key="build_hgvs")
     raw_input_str = (variant_text or "").strip()
 else:
     genome_build_sel = st.selectbox("Genome build", genome_build_options, key="build_coord")
     c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        chrom_val = st.text_input("Chromosome", placeholder="17", key="coord_chr")
-    with c2:
-        pos_val = st.text_input("Position", placeholder="43057062", key="coord_pos")
-    with c3:
-        ref_val = st.text_input("Ref", placeholder="G", key="coord_ref")
-    with c4:
-        alt_val = st.text_input("Alt", placeholder="GG", key="coord_alt")
+    with c1: chrom_val = st.text_input("Chromosome", placeholder="17", key="coord_chr")
+    with c2: pos_val = st.text_input("Position", placeholder="43057062", key="coord_pos")
+    with c3: ref_val = st.text_input("Ref", placeholder="T", key="coord_ref")
+    with c4: alt_val = st.text_input("Alt", placeholder="TG", key="coord_alt")
     if chrom_val and pos_val and ref_val and alt_val:
-        c = chrom_val.strip().lstrip("chr")
-        raw_input_str = f"chr{c}:{pos_val.strip()}:{ref_val.strip().upper()}:{alt_val.strip().upper()}"
+        raw_input_str = f"chr{chrom_val.strip().lstrip('chr')}:{pos_val.strip()}:{ref_val.strip().upper()}:{alt_val.strip().upper()}"
 
 genome_build = "GRCh37" if "37" in genome_build_sel else "GRCh38"
 
 # ---------------------------------------------------------------------------
-# Look Up Transcripts button
+# Look Up Transcripts
 # ---------------------------------------------------------------------------
-
-lookup_button = st.button(
-    "Look Up Transcripts", disabled=not raw_input_str, type="secondary"
-)
-
-if lookup_button and raw_input_str:
+lookup_btn = st.button("Look Up Transcripts", disabled=not raw_input_str, type="secondary")
+if lookup_btn and raw_input_str:
     from agents.input_parser import input_parser_node
-
     init = make_initial_state(raw_input_str)
     init["genome_build"] = genome_build
     with st.spinner("Resolving transcripts via Ensembl VEP..."):
         parser_output = input_parser_node(init)
-
     st.session_state["parser_output"] = parser_output
     st.session_state["raw_input_str"] = raw_input_str
     st.session_state["genome_build"] = genome_build
-    # Clear any previous classification
     if "final_state" in st.session_state:
         del st.session_state["final_state"]
 
 # ---------------------------------------------------------------------------
-# Show transcript dropdown if we have results
+# Transcript results
 # ---------------------------------------------------------------------------
-
 if "parser_output" in st.session_state:
     po = st.session_state["parser_output"]
     transcripts = po.get("all_transcripts") or []
-
     if po.get("input_parse_error") and not po.get("gene_symbol"):
         st.error(f"Parse error: {po['input_parse_error']}")
     elif transcripts:
@@ -177,284 +158,194 @@ if "parser_output" in st.session_state:
         full_name = po.get("gene_full_name", "")
         aliases = po.get("gene_aliases", [])
         sel_tx_id = po.get("selected_transcript", "")
-
-        # Find why it was pre-selected
         top = transcripts[0]
         top_tags = []
-        if top.get("is_mane_select"):
-            top_tags.append("MANE Select")
-        if top.get("is_most_reported_pathogenic"):
-            top_tags.append("Most Reported Pathogenic")
-        if top.get("is_canonical"):
-            top_tags.append("Canonical")
+        if top.get("is_mane_select"): top_tags.append("MANE Select")
+        if top.get("is_most_reported_pathogenic"): top_tags.append("Most Reported Pathogenic")
+        if top.get("is_canonical"): top_tags.append("Canonical")
 
         st.info(
-            f"**Gene:** {full_name} ({gene_sym})  \n"
+            f"**Gene:** {full_name} ({_gene_link(gene_sym)})  \n"
             f"**Aliases:** {', '.join(aliases) if aliases else 'N/A'}  \n"
             f"**Transcripts found:** {len(transcripts)}  \n"
             f"**Pre-selected:** {sel_tx_id}"
             + (f" \u2014 {', '.join(top_tags)}" if top_tags else "")
         )
 
-        # Transcript dropdown
         options = [_transcript_label(tx) for tx in transcripts]
-        selected_idx = st.selectbox(
-            "Select transcript",
-            range(len(options)),
-            format_func=lambda i: options[i],
-            key="tx_select",
-        )
+        selected_idx = st.selectbox("Select transcript", range(len(options)), format_func=lambda i: options[i], key="tx_select")
         if selected_idx is not None:
             st.session_state["chosen_transcript"] = transcripts[selected_idx]
 
-        # Show variant annotation for selected transcript
         chosen = transcripts[selected_idx] if selected_idx is not None else top
-
-        # Genomic coordinates bar (chr, pos, ref, alt, strand)
         po_chrom = po.get("chrom")
         po_pos = po.get("pos")
         po_ref = po.get("ref")
         po_alt = po.get("alt")
         strand_val = chosen.get("strand")
-        strand_str = "+" if strand_val == 1 else "-" if strand_val == -1 else ""
+        strand_str = "+" if strand_val == 1 else "\u2212" if strand_val == -1 else ""
 
+        # Unified annotation bar — consistent markdown, no st.metric
         if po_chrom and po_pos:
-            coord_cols = st.columns(5)
-            with coord_cols[0]:
-                st.metric("Chr", f"chr{po_chrom}")
-            with coord_cols[1]:
-                st.metric("Position", f"{po_pos:,}")
-            with coord_cols[2]:
-                st.metric("Ref / Alt", f"{po_ref} > {po_alt}")
-            with coord_cols[3]:
-                st.metric("Strand", strand_str if strand_str else "N/A")
-            with coord_cols[4]:
-                st.metric("Build", genome_build)
-
-        # Consequence annotation
-        annot_cols = st.columns(4)
-        with annot_cols[0]:
-            pos_type = chosen.get("position_type", "unknown")
-            icon = "\U0001f7e2" if pos_type == "exonic" else "\U0001f7e1" if pos_type == "intronic" else "\u26AA"
-            st.metric("Position", f"{icon} {chosen.get('position_detail', 'N/A')}")
-        with annot_cols[1]:
-            st.metric("Consequence", chosen.get("consequence_display", "N/A"))
-        with annot_cols[2]:
-            st.metric("Impact", chosen.get("impact", "N/A"))
-        with annot_cols[3]:
-            aa = chosen.get("amino_acids", "")
-            st.metric("Amino Acid Change", aa if aa else "N/A")
+            st.markdown(
+                f"**Chr:** chr{po_chrom} &nbsp;|&nbsp; "
+                f"**Pos:** {po_pos:,} &nbsp;|&nbsp; "
+                f"**Ref/Alt:** {po_ref} \u2192 {po_alt} &nbsp;|&nbsp; "
+                f"**Strand:** {strand_str} &nbsp;|&nbsp; "
+                f"**Build:** {genome_build} &nbsp;|&nbsp; "
+                f"**{chosen.get('position_detail', '')}** &nbsp;|&nbsp; "
+                f"**{chosen.get('consequence_display', '')}** &nbsp;|&nbsp; "
+                f"**Impact:** {chosen.get('impact', '')} &nbsp;|&nbsp; "
+                f"**AA:** {chosen.get('amino_acids', '') or 'N/A'}"
+            )
     else:
         st.warning("No transcripts found. Will proceed with raw input.")
 
 # ---------------------------------------------------------------------------
-# Classify Variant button
+# Classify Variant
 # ---------------------------------------------------------------------------
-
-classify_button = st.button(
-    "Classify Variant", type="primary", disabled=not raw_input_str
-)
-
-if classify_button and raw_input_str:
+classify_btn = st.button("Classify Variant", type="primary", disabled=not raw_input_str)
+if classify_btn and raw_input_str:
     initial_state = make_initial_state(raw_input_str)
     initial_state["genome_build"] = genome_build
-
-    # If user looked up transcripts and chose one, inject into state
     if "chosen_transcript" in st.session_state and "parser_output" in st.session_state:
         ct = st.session_state["chosen_transcript"]
         po = st.session_state["parser_output"]
-
-        # Use the HGVS-c from VEP for the chosen transcript
-        hgvsc = ct.get("hgvsc", "")
-        nm = ct.get("nm_accession", "")
-        enst = ct.get("enst_accession", "")
-        tx_id = nm or enst
-
-        if hgvsc:
-            initial_state["hgvs_on_transcript"] = hgvsc
-        if tx_id:
-            initial_state["selected_transcript"] = tx_id
-        if po.get("gene_symbol"):
-            initial_state["gene_symbol"] = po["gene_symbol"]
-        if po.get("gene_aliases"):
-            initial_state["gene_aliases"] = po["gene_aliases"]
-        if po.get("gene_full_name"):
-            initial_state["gene_full_name"] = po["gene_full_name"]
-        if po.get("all_transcripts"):
-            initial_state["all_transcripts"] = po["all_transcripts"]
+        if ct.get("hgvsc"): initial_state["hgvs_on_transcript"] = ct["hgvsc"]
+        tx_id = ct.get("nm_accession") or ct.get("enst_accession")
+        if tx_id: initial_state["selected_transcript"] = tx_id
+        for k in ["gene_symbol", "gene_aliases", "gene_full_name", "all_transcripts",
+                   "chrom", "pos", "ref", "alt"]:
+            if po.get(k): initial_state[k] = po[k]
 
     final_state = dict(initial_state)
-
-    # Progress tracking
     with st.status("Running classification pipeline...", expanded=True) as status:
         try:
             for node_name, node_output in run_graph_stream(initial_state):
                 final_state.update(node_output)
-                label = NODE_LABELS.get(node_name, node_name)
-                st.write(f"\u2705 **{label}** completed")
-
+                st.write(f"\u2705 **{NODE_LABELS.get(node_name, node_name)}** completed")
                 if node_name == "supervisor" and final_state.get("input_parse_error"):
                     if not final_state.get("gene_symbol"):
                         status.update(label="Pipeline stopped", state="error")
                         st.error(f"Parse error: {final_state['input_parse_error']}")
                         st.stop()
-
             status.update(label="Pipeline complete!", state="complete")
         except Exception as e:
             status.update(label="Pipeline error", state="error")
-            st.error(f"An error occurred: {str(e)}")
+            st.error(f"Error: {e}")
             st.stop()
-
     st.session_state["final_state"] = final_state
 
 # ---------------------------------------------------------------------------
-# Show results if we have them
+# Results
 # ---------------------------------------------------------------------------
-
 if "final_state" in st.session_state:
-    final_state = st.session_state["final_state"]
-
-    if not final_state.get("classification"):
+    fs = st.session_state["final_state"]
+    if not fs.get("classification"):
         st.error("No classification produced.")
         st.stop()
 
-    # --- Variant summary bar ---
-    gene_sym = final_state.get("gene_symbol", "")
-    hgvs_disp = final_state.get("hgvs_on_transcript", "")
-    build_disp = final_state.get("genome_build", "")
-    sel_tx = final_state.get("selected_transcript", "")
-    summary_parts = [p for p in [gene_sym, hgvs_disp, build_disp, sel_tx] if p]
+    all_tx = fs.get("all_transcripts") or []
+    sel_tx = fs.get("selected_transcript", "")
+    clinvar = fs.get("clinvar") or {}
+    gnomad = fs.get("gnomad") or {}
+    af_data = gnomad.get("allele_frequency", {})
+    predictors = gnomad.get("insilico_predictors", {})
+    conservation = gnomad.get("conservation", {})
+    acmg_crit = gnomad.get("acmg_criteria", {})
 
-    # Add VEP annotation to summary if available
-    all_tx = final_state.get("all_transcripts") or []
+    # Summary bar
+    parts = [fs.get("gene_symbol", ""), fs.get("hgvs_on_transcript", ""), fs.get("genome_build", "")]
     for t in all_tx:
-        tid = t.get("nm_accession") or t.get("enst_accession")
-        if tid == sel_tx:
-            if t.get("consequence_display"):
-                summary_parts.append(t["consequence_display"])
-            if t.get("position_detail"):
-                summary_parts.append(t["position_detail"])
+        if (t.get("nm_accession") or t.get("enst_accession")) == sel_tx:
+            if t.get("consequence_display"): parts.append(t["consequence_display"])
+            if t.get("position_detail"): parts.append(t["position_detail"])
             break
-    st.markdown(f"**{' | '.join(summary_parts)}**")
+    st.markdown(f"**{' | '.join(p for p in parts if p)}**")
 
-    # --- Section 1: ClinVar Record ---
-    clinvar = final_state.get("clinvar") or {}
+    # --- ClinVar ---
     with st.expander("\U0001f4cb ClinVar Record", expanded=True):
         if not clinvar:
-            st.warning(final_state.get("clinvar_error", "No ClinVar data"))
+            st.warning(fs.get("clinvar_error", "No ClinVar data"))
         else:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown(f"**Gene:** {clinvar.get('gene', 'N/A')}")
+            vid = clinvar.get("variant_id", "")
+            rsid = clinvar.get("rsid", "")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown(f"**Gene:** {_gene_link(clinvar.get('gene', ''))}")
                 st.markdown(f"**HGVS:** {clinvar.get('hgvs', 'N/A')}")
                 st.markdown(f"**Clinical Significance:** {clinvar.get('clinical_significance', 'N/A')}")
                 st.markdown(f"**Condition:** {clinvar.get('condition', 'N/A')}")
-            with col2:
+            with c2:
                 rs = clinvar.get("review_status", "N/A")
                 stars = _get_star_count(rs)
                 st.markdown(f"**Review Status:** {'\u2B50' * stars}{'\u2606' * (4 - stars)} ({rs})")
-                st.markdown(f"**Submitter Count:** {clinvar.get('submitter_count', 0)}")
+                st.markdown(f"**Submitters:** {clinvar.get('submitter_count', 0)}")
                 st.markdown(f"**Last Evaluated:** {clinvar.get('last_evaluated', 'N/A')}")
-                st.markdown(f"**Variant ID:** {clinvar.get('variant_id', 'N/A')}")
-
+                st.markdown(f"**ClinVar ID:** {_clinvar_link(vid)} &nbsp;|&nbsp; **rsID:** {_dbsnp_link(rsid)}")
             if clinvar.get("conflicting_interpretations"):
-                st.warning("\u26A0\uFE0F **Conflicting Interpretations**")
+                st.warning("\u26A0\uFE0F Conflicting interpretations among submitters")
 
-            # Show VEP annotation alongside ClinVar
-            if all_tx:
-                for t in all_tx:
-                    tid = t.get("nm_accession") or t.get("enst_accession")
-                    if tid == sel_tx:
-                        st.divider()
-                        vc1, vc2, vc3, vc4 = st.columns(4)
-                        with vc1:
-                            st.markdown(f"**Position:** {t.get('position_detail', 'N/A')}")
-                        with vc2:
-                            st.markdown(f"**Consequence:** {t.get('consequence_display', 'N/A')}")
-                        with vc3:
-                            st.markdown(f"**Impact:** {t.get('impact', 'N/A')}")
-                        with vc4:
-                            aa = t.get("amino_acids", "")
-                            st.markdown(f"**AA Change:** {aa if aa else 'N/A'}")
-                        break
-
-    # --- Section 2: gnomAD + In Silico Predictors ---
-    gnomad = final_state.get("gnomad")
-    if gnomad and isinstance(gnomad, dict):
+    # --- gnomAD + In Silico ---
+    if gnomad:
         with st.expander("\U0001f4ca Population Frequencies & In Silico Predictors", expanded=True):
-            af_data = gnomad.get("allele_frequency", {})
-            predictors = gnomad.get("insilico_predictors", {})
-            conservation = gnomad.get("conservation", {})
-            acmg_crit = gnomad.get("acmg_criteria", {})
-
-            # Genomic coordinates bar
-            coord_str = gnomad.get("coordinates", "")
             gn_vid = gnomad.get("gnomad_variant_id", "")
             rsid_val = gnomad.get("rsid", "")
+            coord_str = gnomad.get("coordinates", "")
+            strand_info = ""
+            for t in all_tx:
+                if (t.get("nm_accession") or t.get("enst_accession")) == sel_tx:
+                    s = t.get("strand")
+                    strand_info = "+" if s == 1 else "\u2212" if s == -1 else ""
+                    break
 
-            coord_parts = []
-            if coord_str:
-                coord_parts.append(f"**Coordinates:** {coord_str}")
-            if gn_vid:
-                coord_parts.append(f"**gnomAD ID:** {gn_vid}")
-            if rsid_val:
-                coord_parts.append(f"**rsID:** {rsid_val}")
-            # Get strand from transcript annotation
-            if all_tx:
-                for t in all_tx:
-                    tid = t.get("nm_accession") or t.get("enst_accession")
-                    if tid == sel_tx and t.get("strand") is not None:
-                        strand_str = "+" if t["strand"] == 1 else "-" if t["strand"] == -1 else str(t["strand"])
-                        coord_parts.append(f"**Strand:** {strand_str}")
-                        break
-            if coord_parts:
-                st.markdown(" | ".join(coord_parts))
+            link_parts = []
+            if coord_str: link_parts.append(f"**Coords:** {coord_str}")
+            if strand_info: link_parts.append(f"**Strand:** {strand_info}")
+            if gn_vid: link_parts.append(f"**gnomAD:** {_gnomad_link(gn_vid)}")
+            if rsid_val: link_parts.append(f"**dbSNP:** {_dbsnp_link(rsid_val)}")
+            if link_parts:
+                st.markdown(" &nbsp;|&nbsp; ".join(link_parts))
 
-            # Frequency summary
             st.markdown("#### gnomAD Allele Frequencies")
             if af_data.get("variant_in_gnomad"):
-                fc1, fc2, fc3, fc4 = st.columns(4)
-                with fc1:
-                    gaf = af_data.get("global_af")
-                    st.metric("Global AF", f"{gaf:.6f}" if gaf else "N/A")
-                with fc2:
-                    maf = af_data.get("max_pop_af", 0)
-                    mpn = af_data.get("max_pop_name", "")
-                    st.metric("Max Pop AF", f"{maf:.6f}" if maf else "0", delta=mpn)
-                with fc3:
-                    st.metric("Homozygotes", af_data.get("hom", 0))
-                with fc4:
-                    # Show exome and genome AC/AN
-                    exome = af_data.get("exome") or {}
-                    genome = af_data.get("genome") or {}
-                    exome_str = f"Exome: {exome.get('ac', 0)}/{exome.get('an', 0)}" if exome.get("an") else ""
-                    genome_str = f"Genome: {genome.get('ac', 0)}/{genome.get('an', 0)}" if genome.get("an") else ""
-                    st.metric("AC/AN", exome_str or genome_str or "N/A")
+                gaf = af_data.get("global_af")
+                maf = af_data.get("max_pop_af", 0)
+                mpn = POP_NAMES.get(af_data.get("max_pop_name", ""), af_data.get("max_pop_name", ""))
+                exome = af_data.get("exome") or {}
+                genome = af_data.get("genome") or {}
+                st.markdown(
+                    f"**Global AF:** {gaf:.6f} &nbsp;|&nbsp; "
+                    f"**Max Pop AF:** {maf:.6f} ({mpn}) &nbsp;|&nbsp; "
+                    f"**Homozygotes:** {af_data.get('hom', 0)} &nbsp;|&nbsp; "
+                    + (f"**Exome:** {exome.get('ac',0)}/{exome.get('an',0)} &nbsp;|&nbsp; " if exome.get("an") else "")
+                    + (f"**Genome:** {genome.get('ac',0)}/{genome.get('an',0)}" if genome.get("an") else "")
+                )
 
-                # Population breakdown table
                 pops = af_data.get("populations", {})
                 if pops:
                     pop_rows = []
-                    for pid, pdata in sorted(pops.items()):
-                        if isinstance(pdata, dict):
+                    for pid in POP_ORDER:
+                        pd = pops.get(pid)
+                        if pd and isinstance(pd, dict):
                             pop_rows.append({
-                                "Population": pdata.get("name", pid),
-                                "AF": f"{pdata.get('af', 0):.6f}",
-                                "AC": pdata.get("ac", 0),
-                                "Hom": pdata.get("hom", 0),
+                                "Population": pd.get("name", pid),
+                                "AF": f"{pd.get('af', 0):.6f}",
+                                "AC": pd.get("ac", 0),
+                                "AN": pd.get("an", 0),
+                                "Hom": pd.get("hom", 0),
                             })
                     if pop_rows:
                         st.dataframe(pop_rows, use_container_width=True, hide_index=True)
             else:
                 st.info("Variant **not found** in gnomAD — absent from population controls (supports PM2)")
 
-            # Frequency ACMG flags
-            freq_cols = st.columns(3)
-            for i, (code, label) in enumerate([("BA1", "AF>5%"), ("BS1", "AF>1%"), ("PM2", "Absent/rare")]):
-                with freq_cols[i]:
-                    met = acmg_crit.get(f"{code}_met", False)
-                    icon = "\u2705" if met else "\u274C"
-                    st.markdown(f"{icon} **{code}** ({label})")
+            # ACMG frequency flags
+            st.markdown(
+                f"{'\u2705' if acmg_crit.get('BA1_met') else '\u274C'} **BA1** (AF>5%) &nbsp;&nbsp; "
+                f"{'\u2705' if acmg_crit.get('BS1_met') else '\u274C'} **BS1** (AF>1%) &nbsp;&nbsp; "
+                f"{'\u2705' if acmg_crit.get('PM2_met') else '\u274C'} **PM2** (Absent/rare)"
+            )
 
             # In silico predictors
             if predictors:
@@ -463,7 +354,7 @@ if "final_state" in st.session_state:
                 for name, val in predictors.items():
                     if isinstance(val, dict):
                         pred_rows.append({
-                            "Predictor": name.upper(),
+                            "Predictor": name.replace("_", " ").upper(),
                             "Score": val.get("score", val.get("interpretation", "")),
                             "Prediction": val.get("pred", val.get("interpretation", "")),
                         })
@@ -473,215 +364,219 @@ if "final_state" in st.session_state:
                     st.dataframe(pred_rows, use_container_width=True, hide_index=True)
 
                 consensus = gnomad.get("insilico_consensus", "")
-                if consensus:
-                    color = {"Damaging": "red", "Benign": "green"}.get(consensus, "orange")
-                    st.markdown(f"**Consensus:** :{color}[{consensus}]")
+                color = {"Damaging": "red", "Benign": "green"}.get(consensus, "orange")
+                st.markdown(
+                    f"**Consensus:** :{color}[{consensus}] &nbsp;&nbsp; "
+                    f"{'\u2705' if acmg_crit.get('PP3_met') else '\u274C'} **PP3** &nbsp;&nbsp; "
+                    f"{'\u2705' if acmg_crit.get('BP4_met') else '\u274C'} **BP4**"
+                )
 
-                pp3_met = acmg_crit.get("PP3_met", False)
-                bp4_met = acmg_crit.get("BP4_met", False)
-                p1, p2 = st.columns(2)
-                with p1:
-                    st.markdown(f"{'\u2705' if pp3_met else '\u274C'} **PP3** (computational damaging)")
-                with p2:
-                    st.markdown(f"{'\u2705' if bp4_met else '\u274C'} **BP4** (computational benign)")
-
-            # Conservation
             if conservation:
                 st.markdown("#### Conservation")
-                cons_cols = st.columns(len(conservation))
-                for i, (name, val) in enumerate(conservation.items()):
-                    with cons_cols[i]:
-                        st.metric(name, f"{val:.3f}" if isinstance(val, float) else str(val))
+                cons_parts = [f"**{k}:** {v:.3f}" if isinstance(v, float) else f"**{k}:** {v}" for k, v in conservation.items()]
+                st.markdown(" &nbsp;|&nbsp; ".join(cons_parts))
 
-    # --- Section 3: Case-Control Analysis ---
-    if gnomad and isinstance(gnomad, dict):
-        af_data = gnomad.get("allele_frequency", {})
-        if af_data.get("variant_in_gnomad"):
-            with st.expander("\U0001f9ea Case-Control Analysis (Fisher's / Weighted GLM)", expanded=False):
-                st.markdown(
-                    "Compare your cohort's variant frequency against gnomAD populations. "
-                    "Enter the number of variant carriers and total sample size below."
-                )
+    # --- Case-Control Analysis ---
+    if gnomad and af_data.get("variant_in_gnomad"):
+        with st.expander("\U0001f9ea Case-Control Analysis", expanded=False):
+            st.markdown("Compare your cohort's variant frequency against gnomAD populations.")
 
-                cc1, cc2 = st.columns(2)
-                with cc1:
-                    case_carriers = st.number_input(
-                        "Variant carriers in your cohort",
-                        min_value=0, value=1, step=1, key="case_carriers"
+            # Overall case input
+            st.markdown("**Overall cohort**")
+            oc1, oc2 = st.columns(2)
+            with oc1:
+                overall_carriers = st.number_input("Carriers", min_value=0, value=1, step=1, key="cc_overall_carriers")
+            with oc2:
+                overall_total = st.number_input("Total samples", min_value=1, value=100, step=1, key="cc_overall_total")
+
+            # Ethnicity-specific input toggle
+            use_eth = st.checkbox("Provide ethnicity-specific case counts", key="use_eth_input")
+
+            case_data = {"overall": {"carriers": overall_carriers, "total": overall_total}}
+
+            if use_eth:
+                st.markdown("**Per-ancestry case counts** (leave 0/0 to use overall)")
+                pops_available = af_data.get("populations", {})
+                eth_cols = st.columns(3)
+                for i, pid in enumerate(POP_ORDER):
+                    if pid not in pops_available:
+                        continue
+                    pname = POP_NAMES.get(pid, pid)
+                    col = eth_cols[i % 3]
+                    with col:
+                        st.markdown(f"*{pname}*")
+                        e1, e2 = st.columns(2)
+                        with e1:
+                            ec = st.number_input("Carriers", min_value=0, value=0, step=1, key=f"cc_{pid}_c")
+                        with e2:
+                            et = st.number_input("Total", min_value=0, value=0, step=1, key=f"cc_{pid}_t")
+                        if et > 0:
+                            case_data[pid] = {"carriers": ec, "total": et}
+
+            # Dataset selection
+            from tools.gnomad_graphql import GNOMAD_DATASETS
+            build = fs.get("genome_build", "GRCh38")
+            avail_ds = [d for d, info in GNOMAD_DATASETS.items() if info["build"] == build]
+            ds_labels = {d: f"{GNOMAD_DATASETS[d]['label']} ({GNOMAD_DATASETS[d]['samples']:,})" for d in avail_ds}
+            selected_ds = st.multiselect("gnomAD control datasets", options=avail_ds,
+                                          default=[avail_ds[0]] if avail_ds else [],
+                                          format_func=lambda x: ds_labels.get(x, x), key="gnomad_datasets")
+
+            run_cc = st.button("Run Case-Control Analysis", key="run_cc")
+
+            if run_cc and overall_total > 0:
+                from tools.case_control import run_case_control_analysis
+                from tools.gnomad_graphql import query_gnomad_by_rsid
+                rsid = gnomad.get("rsid", "")
+
+                for ds_id in selected_ds:
+                    ds_label = GNOMAD_DATASETS.get(ds_id, {}).get("label", ds_id)
+                    gn_link = _gnomad_link(gnomad.get("gnomad_variant_id", ""), ds_id)
+                    st.markdown(f"#### {ds_label} {gn_link}")
+
+                    with st.spinner(f"Querying {ds_label}..."):
+                        ds_data = query_gnomad_by_rsid(rsid, build, ds_id) if rsid else None
+
+                    if not ds_data:
+                        st.warning(f"Variant not found in {ds_label}")
+                        continue
+
+                    ds_data["dataset_label"] = ds_label
+                    cc_result = run_case_control_analysis(case_data, ds_data)
+
+                    # Overall result
+                    ov = cc_result["overall_fishers"]
+                    or_str = f"{ov['odds_ratio']:.2f}" if ov.get("odds_ratio") and ov["odds_ratio"] != float("inf") else "Inf" if ov.get("odds_ratio") == float("inf") else "N/A"
+                    pv = ov.get("p_value")
+                    pv_str = f"{pv:.2e}" if pv and pv < 0.001 else f"{pv:.4f}" if pv else "N/A"
+                    sig_color = "red" if ov.get("significant") else "green"
+                    st.markdown(
+                        f"**Overall:** Case AF={ov['case_af']:.4f} vs Control AF={ov['control_af']:.6f} "
+                        f"| OR={or_str} | :{sig_color}[p={pv_str}]"
                     )
-                with cc2:
-                    case_total = st.number_input(
-                        "Total individuals in your cohort",
-                        min_value=1, value=100, step=1, key="case_total"
-                    )
 
-                # gnomAD dataset selection
-                from tools.gnomad_graphql import GNOMAD_DATASETS
-                build = final_state.get("genome_build", "GRCh38")
-                available_ds = [
-                    ds_id for ds_id, info in GNOMAD_DATASETS.items()
-                    if info["build"] == build
-                ]
-                ds_labels = {
-                    ds_id: f"{GNOMAD_DATASETS[ds_id]['label']} ({GNOMAD_DATASETS[ds_id]['samples']:,} samples)"
-                    for ds_id in available_ds
-                }
-                selected_ds = st.multiselect(
-                    "gnomAD control datasets",
-                    options=available_ds,
-                    default=[available_ds[0]] if available_ds else [],
-                    format_func=lambda x: ds_labels.get(x, x),
-                    key="gnomad_datasets",
-                )
-
-                run_cc = st.button("Run Case-Control Analysis", key="run_cc")
-
-                if run_cc and case_total > 0:
-                    from tools.case_control import run_case_control_analysis
-                    from tools.gnomad_graphql import query_gnomad_by_rsid
-
-                    rsid = gnomad.get("rsid", "")
-
-                    # Run against each selected dataset
-                    for ds_id in selected_ds:
-                        ds_label = GNOMAD_DATASETS.get(ds_id, {}).get("label", ds_id)
-                        st.markdown(f"##### {ds_label}")
-
-                        # Query gnomAD for this dataset
-                        with st.spinner(f"Querying {ds_label}..."):
-                            if rsid:
-                                ds_data = query_gnomad_by_rsid(rsid, build, ds_id)
-                            else:
-                                ds_data = None
-
-                        if not ds_data:
-                            st.warning(f"Variant not found in {ds_label}")
-                            continue
-
-                        # Add dataset label
-                        ds_data["dataset_label"] = ds_label
-
-                        # Run analysis
-                        cc_result = run_case_control_analysis(
-                            case_carriers, case_total, ds_data
-                        )
-
-                        # Overall Fisher's
-                        overall = cc_result["overall_fishers"]
-                        m1, m2, m3 = st.columns(3)
-                        with m1:
-                            st.metric(
-                                "Case AF",
-                                f"{overall['case_af']:.4f}" if overall["case_af"] else "0",
-                            )
-                        with m2:
-                            st.metric(
-                                "Control AF",
-                                f"{overall['control_af']:.6f}" if overall["control_af"] else "0",
-                            )
-                        with m3:
-                            or_val = overall.get("odds_ratio")
-                            st.metric(
-                                "Odds Ratio",
-                                f"{or_val:.2f}" if or_val and or_val != float("inf") else "Inf" if or_val == float("inf") else "N/A",
-                            )
-
-                        pval = overall.get("p_value")
-                        sig = overall.get("significant", False)
-                        pval_str = f"{pval:.2e}" if pval and pval < 0.001 else f"{pval:.4f}" if pval else "N/A"
-                        color = "red" if sig else "green"
-                        st.markdown(f"**Overall Fisher's:** {overall.get('interpretation', '')} "
-                                    f"(:{color}[p={pval_str}])")
-
-                        # Per-ancestry Fisher's
-                        anc_results = cc_result.get("ancestry_fishers", [])
-                        if anc_results:
-                            anc_rows = []
-                            for ar in anc_results:
-                                pv = ar.get("p_value")
-                                anc_rows.append({
-                                    "Population": ar.get("population", ""),
-                                    "Case AF": f"{ar['case_af']:.4f}",
-                                    "Control AF": f"{ar['control_af']:.6f}",
-                                    "OR": f"{ar['odds_ratio']:.2f}" if ar.get("odds_ratio") and ar["odds_ratio"] != float("inf") else "Inf",
-                                    "p-value": f"{pv:.2e}" if pv and pv < 0.001 else f"{pv:.4f}" if pv else "N/A",
-                                    "Significant": "\u2705" if ar.get("significant") else "",
+                    # Per-ancestry table
+                    anc = cc_result.get("ancestry_fishers", [])
+                    if anc:
+                        rows = []
+                        plot_data = []
+                        for ar in anc:
+                            or_v = ar.get("odds_ratio")
+                            pv = ar.get("p_value")
+                            rows.append({
+                                "Population": ar.get("population", ""),
+                                "Case (carriers/total)": f"{ar['case_ac']}/{ar['case_an']//2}",
+                                "Control (AC/AN)": f"{ar['control_ac']}/{ar['control_an']}",
+                                "Case AF": f"{ar['case_af']:.4f}",
+                                "Control AF": f"{ar['control_af']:.6f}",
+                                "OR": f"{or_v:.2f}" if or_v and or_v != float("inf") else "Inf",
+                                "p-value": f"{pv:.2e}" if pv and pv < 0.001 else f"{pv:.4f}" if pv else "N/A",
+                                "Sig": "\u2705" if ar.get("significant") else "",
+                            })
+                            if or_v and or_v != float("inf") and or_v > 0:
+                                plot_data.append({
+                                    "pop": ar.get("population", ""),
+                                    "or": or_v,
+                                    "ci_lo": ar.get("ci_lower", or_v * 0.5),
+                                    "ci_hi": ar.get("ci_upper", or_v * 2),
+                                    "sig": ar.get("significant", False),
                                 })
-                            st.dataframe(anc_rows, use_container_width=True, hide_index=True)
+                        st.dataframe(rows, use_container_width=True, hide_index=True)
 
-                        # Weighted GLM
-                        glm = cc_result.get("weighted_glm", {})
-                        if glm.get("p_value") is not None:
-                            st.markdown(f"**Weighted GLM:** {glm.get('interpretation', '')}")
-                        elif glm.get("interpretation"):
-                            st.info(glm["interpretation"])
+                        # Forest plot
+                        if plot_data:
+                            import plotly.graph_objects as go
+                            fig = go.Figure()
+                            pops_sorted = sorted(plot_data, key=lambda x: x["or"])
+                            y_labels = [d["pop"] for d in pops_sorted]
+                            x_vals = [d["or"] for d in pops_sorted]
+                            ci_lo = [d["ci_lo"] for d in pops_sorted]
+                            ci_hi = [d["ci_hi"] for d in pops_sorted]
+                            colors = ["#ff4b4b" if d["sig"] else "#888" for d in pops_sorted]
 
-                        st.divider()
+                            fig.add_trace(go.Scatter(
+                                x=x_vals, y=y_labels, mode="markers",
+                                marker=dict(size=10, color=colors),
+                                error_x=dict(
+                                    type="data",
+                                    symmetric=False,
+                                    array=[h - v for v, h in zip(x_vals, ci_hi)],
+                                    arrayminus=[v - l for v, l in zip(x_vals, ci_lo)],
+                                ),
+                                hovertemplate="%{y}<br>OR=%{x:.2f}<extra></extra>",
+                            ))
+                            fig.add_vline(x=1, line_dash="dash", line_color="gray")
+                            fig.update_layout(
+                                title="Forest Plot — Odds Ratio by Ancestry",
+                                xaxis_title="Odds Ratio (log scale)",
+                                xaxis_type="log",
+                                height=max(300, len(pops_sorted) * 40 + 100),
+                                showlegend=False,
+                                margin=dict(l=200),
+                                font=dict(size=13),
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
 
-    # --- Section 4: ACMG Criteria ---
+                    # GLM
+                    glm = cc_result.get("weighted_glm", {})
+                    if glm.get("p_value") is not None:
+                        glm_pv = glm["p_value"]
+                        glm_color = "red" if glm_pv < 0.05 else "green"
+                        st.markdown(f"**Weighted GLM:** {glm['interpretation']} :{glm_color}[p={glm_pv:.4f}]")
+                    elif glm.get("interpretation"):
+                        st.markdown(f"**Weighted GLM:** {glm['interpretation']}")
+                    st.divider()
+
+    # --- ACMG Criteria ---
     with st.expander("\U0001f3af ACMG Criteria", expanded=True):
-        criteria = final_state.get("criteria_triggered") or []
-        met_criteria = [c for c in criteria if c.get("met", True)]
+        criteria = fs.get("criteria_triggered") or []
+        met = [c for c in criteria if c.get("met", True)]
         unmet = [c for c in criteria if not c.get("met", True)]
-
-        if not met_criteria and not unmet:
+        if not met and not unmet:
             st.info("No ACMG criteria evaluated.")
         else:
-            if met_criteria:
+            if met:
                 st.markdown("**Criteria Met:**")
-                for c in met_criteria:
+                for c in met:
                     d = c.get("direction", "")
                     icon = "\U0001f534" if d == "pathogenic" else "\U0001f7e2"
-                    st.markdown(f"{icon} **{c.get('code', '')}** ({c.get('strength', '')}) "
-                                f"&mdash; {c.get('justification', '')}")
+                    st.markdown(f"{icon} **{c.get('code','')}** ({c.get('strength','')}) \u2014 {c.get('justification','')}")
             if unmet:
                 with st.expander(f"Criteria Not Met / Not Evaluable ({len(unmet)})"):
                     for c in unmet:
-                        st.markdown(f"\u2B1C **{c.get('code', '')}** &mdash; {c.get('justification', '')}")
+                        st.markdown(f"\u2B1C **{c.get('code','')}** \u2014 {c.get('justification','')}")
 
-    # --- Section 3: Classification ---
+    # --- Classification ---
     with st.expander("\U0001f3c6 Final Classification", expanded=True):
-        classification = final_state.get("classification", "VUS")
-        confidence = final_state.get("confidence", "Low")
-        reasoning = final_state.get("reasoning", "")
-
+        classification = fs.get("classification", "VUS")
         colors = {
-            "Pathogenic": ("#ff4b4b", "#fff"),
-            "Likely Pathogenic": ("#ff8c00", "#fff"),
-            "VUS": ("#ffd700", "#333"),
-            "Likely Benign": ("#90ee90", "#333"),
-            "Benign": ("#4caf50", "#fff"),
+            "Pathogenic": ("#ff4b4b", "#fff"), "Likely Pathogenic": ("#ff8c00", "#fff"),
+            "VUS": ("#ffd700", "#333"), "Likely Benign": ("#90ee90", "#333"), "Benign": ("#4caf50", "#fff"),
         }
         bg, fg = colors.get(classification, ("#ffd700", "#333"))
         st.markdown(
-            f'<div style="background:{bg};color:{fg};padding:20px;border-radius:10px;'
-            f'text-align:center;font-size:24px;font-weight:bold;margin:10px 0">'
-            f'{classification}</div>',
-            unsafe_allow_html=True,
+            f'<div style="background:{bg};color:{fg};padding:16px;border-radius:8px;'
+            f'text-align:center;font-size:1.3rem;font-weight:bold;margin:8px 0">'
+            f'{classification}</div>', unsafe_allow_html=True,
         )
-        st.markdown(f"**Confidence:** {confidence}")
-        st.markdown(f"**Reasoning:** {reasoning}")
+        st.markdown(f"**Confidence:** {fs.get('confidence','Low')}")
+        st.markdown(f"**Reasoning:** {fs.get('reasoning','')}")
 
-    # --- Warnings ---
-    warnings = final_state.get("warnings", [])
+    # Warnings
+    warnings = fs.get("warnings", [])
     if warnings:
         with st.expander(f"\u26A0\uFE0F Warnings ({len(warnings)})"):
-            for w in warnings:
-                st.markdown(f"- {w}")
+            for w in warnings: st.markdown(f"- {w}")
 
-    # --- Disclaimer ---
+    # Disclaimer
     st.divider()
-    disclaimer = final_state.get("disclaimer", "")
-    if disclaimer:
-        st.markdown(f'<p style="color:gray;font-size:12px">{disclaimer}</p>', unsafe_allow_html=True)
+    if fs.get("disclaimer"):
+        st.markdown(f'<p style="color:gray;font-size:0.75rem">{fs["disclaimer"]}</p>', unsafe_allow_html=True)
 
-    # --- Debug ---
+    # Debug
     with st.expander("\U0001f41b Debug: Full State JSON"):
         debug = {}
-        for k, v in final_state.items():
-            try:
-                json.dumps(v)
-                debug[k] = v
-            except (TypeError, ValueError):
-                debug[k] = str(v)
+        for k, v in fs.items():
+            try: json.dumps(v); debug[k] = v
+            except: debug[k] = str(v)
         st.json(debug)
