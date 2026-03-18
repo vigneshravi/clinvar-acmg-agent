@@ -104,14 +104,59 @@ def _build_evidence_prompt(state: VariantState) -> str:
     else:
         parts.append("## ClinVar Evidence\nNot available — no ClinVar record found.")
 
-    # gnomAD
-    if state.get("gnomad"):
-        parts.append(f"## gnomAD Evidence\n{json.dumps(state['gnomad'], indent=2)}")
+    # gnomAD + In Silico Predictors
+    gnomad = state.get("gnomad")
+    if gnomad and isinstance(gnomad, dict):
+        af_data = gnomad.get("allele_frequency", {})
+        predictors = gnomad.get("insilico_predictors", {})
+        conservation = gnomad.get("conservation", {})
+        acmg_freq = gnomad.get("acmg_criteria", {})
+
+        gn_lines = ["## gnomAD Population Frequencies"]
+        gn_lines.append(f"- Global AF: {af_data.get('global_af', 'Not found')}")
+        gn_lines.append(f"- Variant in gnomAD: {af_data.get('variant_in_gnomad', False)}")
+        gn_lines.append(f"- Homozygote count: {af_data.get('hom', 0)}")
+        gn_lines.append(f"- Max population AF: {af_data.get('max_pop_af', 0)} ({af_data.get('max_pop_name', '')})")
+        pops = af_data.get("populations", {})
+        if pops:
+            gn_lines.append("- Population breakdown:")
+            for pop_id, pop_data in sorted(pops.items()):
+                if isinstance(pop_data, dict):
+                    gn_lines.append(f"  - {pop_data.get('name', pop_id)}: AF={pop_data.get('af', 0)}, AC={pop_data.get('ac', 0)}")
+                else:
+                    gn_lines.append(f"  - {pop_id}: AF={pop_data}")
+        gn_lines.append(f"- Pre-computed: BA1={'MET' if acmg_freq.get('BA1_met') else 'not met'}, "
+                        f"BS1={'MET' if acmg_freq.get('BS1_met') else 'not met'}, "
+                        f"PM2={'MET' if acmg_freq.get('PM2_met') else 'not met'}")
+        parts.append("\n".join(gn_lines))
+
+        # In silico predictors
+        if predictors:
+            is_lines = ["## In Silico Predictors (dbNSFP + CADD)"]
+            for name, val in predictors.items():
+                if isinstance(val, dict):
+                    score = val.get("score", val.get("interpretation", ""))
+                    pred = val.get("pred", val.get("interpretation", ""))
+                    is_lines.append(f"- {name}: score={score}, prediction={pred}")
+                else:
+                    is_lines.append(f"- {name}: {val}")
+            is_lines.append(f"- Consensus: {gnomad.get('insilico_consensus', 'N/A')}")
+            is_lines.append(f"- PP3={'MET' if acmg_freq.get('PP3_met') else 'not met'}, "
+                            f"BP4={'MET' if acmg_freq.get('BP4_met') else 'not met'}")
+            parts.append("\n".join(is_lines))
+        else:
+            parts.append("## In Silico Predictors\nNo predictor scores available for this variant type.")
+
+        # Conservation
+        if conservation:
+            cv_lines = ["## Conservation Scores"]
+            for name, val in conservation.items():
+                cv_lines.append(f"- {name}: {val}")
+            parts.append("\n".join(cv_lines))
     else:
         parts.append(
-            "## gnomAD Evidence\n"
-            "Not available — BA1 (allele frequency >5%), BS1 (frequency greater "
-            "than expected), PM2 (absent from controls) cannot be evaluated."
+            "## gnomAD + In Silico Evidence\n"
+            "Not available — BA1, BS1, PM2, PP3, BP4 cannot be evaluated."
         )
 
     # PubMed
@@ -151,17 +196,29 @@ def _build_evidence_prompt(state: VariantState) -> str:
     # Instructions
     parts.append(
         "## Instructions\n"
-        "Evaluate these ACMG criteria based on the evidence above:\n"
+        "Evaluate ALL of the following ACMG criteria based on the evidence above:\n\n"
+        "### From ClinVar:\n"
         "- PS1: Same amino acid change as established pathogenic variant\n"
         "- PP5: Reputable source reports variant as pathogenic "
         "(upgrade to Strong for expert panel 3+ stars, Moderate for 2 stars)\n"
         "- BP6: Reputable source reports variant as benign "
         "(upgrade to Strong for expert panel 3+ stars, Moderate for 2 stars)\n"
-        "- BA1: Flag if ClinVar notes high population frequency\n"
-        "- PM5: Novel missense at same position as known pathogenic missense\n"
-        "- For any criterion that cannot be evaluated due to missing evidence, "
-        "set met=false and explain why in justification.\n"
+        "- PM5: Novel missense at same position as known pathogenic missense\n\n"
+        "### From gnomAD allele frequency:\n"
+        "- BA1: Allele frequency >5% in any gnomAD population (Stand-alone Benign)\n"
+        "- BS1: Allele frequency >1%, greater than expected for rare disease (Strong Benign)\n"
+        "- PM2: Absent from gnomAD or extremely rare AF<0.01% (Supporting Pathogenic)\n\n"
+        "### From in silico predictors:\n"
+        "- PP3: Multiple computational tools predict damaging effect (Supporting Pathogenic)\n"
+        "  Use pre-computed consensus. REVEL>0.75, CADD>25, AlphaMissense>0.564 = damaging\n"
+        "- BP4: Multiple computational tools predict no impact (Supporting Benign)\n"
+        "  REVEL<0.15, CADD<15 = benign\n\n"
+        "### Rules:\n"
+        "- Use the pre-computed ACMG criteria flags (BA1_met, PM2_met, PP3_met, etc.) "
+        "from the evidence sections — do not override them unless you have a specific reason.\n"
+        "- For any criterion that cannot be evaluated, set met=false and explain why.\n"
         "- Apply ACMG combining rules to determine final classification.\n"
+        "- BA1 alone is sufficient for Benign (Stand-alone).\n"
         "\nRespond with ONLY valid JSON."
     )
 

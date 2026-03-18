@@ -1,5 +1,5 @@
-"""Node 1: Input Parser — resolves raw variant input into structured fields
-with transcript list, gene info, and HGVS on selected transcript."""
+"""Node 1: Input Parser — resolves variant input into transcripts with
+NM↔ENST mapping, VEP annotation, and ranked transcript selection."""
 
 import logging
 import re
@@ -7,7 +7,7 @@ from typing import Any
 
 from cache.cache_manager import CacheManager
 from graph.state import VariantState
-from tools.ensembl import get_transcripts_for_gene, recode_variant
+from tools.ensembl import resolve_transcripts
 from tools.entrez import count_pathogenic_submissions_per_transcript, get_gene_aliases
 from tools.variant_utils import parse_variant_input
 
@@ -16,12 +16,52 @@ logger = logging.getLogger(__name__)
 _cache = CacheManager()
 
 
+def _rank_transcripts(transcripts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Score and sort transcripts by clinical relevance.
+
+    Priority order:
+    1. MANE Select/Clinical + Most Reported Pathogenic + Canonical
+    2. MANE Select/Clinical + (Most Reported OR Canonical)
+    3. MANE Select/Clinical OR Most Reported
+    4. Canonical
+    5. Others
+    """
+    for tx in transcripts:
+        score = 0
+        if tx.get("is_mane_select"):
+            score += 4
+        if tx.get("is_mane_plus_clinical"):
+            score += 4
+        if tx.get("is_most_reported_pathogenic"):
+            score += 2
+        if tx.get("is_canonical"):
+            score += 1
+        if tx.get("nm_accession"):
+            score += 1  # prefer transcripts with NM_
+        tx["annotation_score"] = score
+
+    transcripts.sort(
+        key=lambda t: (-t["annotation_score"], t.get("nm_accession") or "zzz"),
+    )
+    return transcripts
+
+
 def input_parser_node(state: VariantState) -> dict[str, Any]:
-    """Parse raw_input and resolve to gene, transcripts, and HGVS notation."""
+    """Parse raw_input, resolve transcripts via VEP, map NM↔ENST, annotate."""
     logger.info("input_parser_node: parsing '%s'", state["raw_input"])
     genome_build = state.get("genome_build", "GRCh38")
     updates: dict[str, Any] = {"current_node": "input_parser"}
     warnings: list[str] = list(state.get("warnings", []))
+
+    # If the state already has a selected transcript (user chose from dropdown)
+    if (state.get("selected_transcript")
+            and state.get("hgvs_on_transcript")
+            and state.get("gene_symbol")):
+        logger.info("input_parser_node: using pre-selected transcript %s",
+                     state["selected_transcript"])
+        updates["input_mode"] = "hgvs"
+        updates["warnings"] = warnings
+        return updates
 
     # ---- Step 1: Parse raw input ----
     parsed = parse_variant_input(state["raw_input"])
@@ -33,152 +73,145 @@ def input_parser_node(state: VariantState) -> dict[str, Any]:
 
     updates["input_mode"] = parsed.get("input_mode", "hgvs")
 
-    # Handle coordinates mode
-    if parsed.get("input_mode") == "coordinates":
-        chrom = (parsed.get("chrom") or "").lstrip("chr").upper()
-        updates["chrom"] = chrom
-        updates["pos"] = parsed.get("pos")
-        updates["ref"] = parsed.get("ref")
-        updates["alt"] = parsed.get("alt")
-        # For coordinates, we cannot do transcript resolution without VEP
-        # Set a minimal state so ClinVar can try a positional search
-        updates["hgvs_on_transcript"] = state["raw_input"]
-        warnings.append("Coordinate input: transcript resolution limited")
-        updates["warnings"] = warnings
-        return updates
-
+    # ---- Step 2: Build VEP query parameters ----
     gene_symbol = parsed.get("gene")
-    transcript_from_input = parsed.get("transcript")
+    transcript = parsed.get("transcript")
     cdna = parsed.get("cdna")
+    chrom = parsed.get("chrom")
+    pos = parsed.get("pos")
+    ref = parsed.get("ref")
+    alt = parsed.get("alt")
 
-    # If input already has NM_ accession (e.g. NM_007294.4:c.5266dupC)
-    has_explicit_transcript = transcript_from_input is not None
+    # Construct HGVS string for VEP
+    # VEP requires transcript:cdna format (e.g. NM_007294.4:c.5266dupC)
+    hgvs_for_vep = None
+    if transcript and cdna:
+        hgvs_for_vep = f"{transcript}:{cdna}"
+    elif gene_symbol and cdna and not chrom:
+        # No transcript specified — look up the primary NM_ from ClinVar
+        # pathogenic submission counts (this tells us the clinically
+        # relevant transcript)
+        try:
+            path_counts = count_pathogenic_submissions_per_transcript(
+                gene_symbol.upper()
+            )
+            if path_counts:
+                primary_nm = path_counts.most_common(1)[0][0]
+                hgvs_for_vep = f"{primary_nm}:{cdna}"
+                logger.info(
+                    "input_parser: using primary NM_ %s for VEP query",
+                    primary_nm,
+                )
+        except Exception as e:
+            logger.warning("Could not get primary NM_ for VEP: %s", e)
 
-    if has_explicit_transcript:
-        updates["selected_transcript"] = transcript_from_input
-        updates["hgvs_on_transcript"] = f"{transcript_from_input}:{cdna}"
-        # Try to extract gene from transcript via ClinVar later
+    # ---- Step 3: Resolve all transcripts ----
+    logger.info("input_parser_node: resolving transcripts via VEP")
+    resolution = resolve_transcripts(
+        gene_symbol=gene_symbol.upper() if gene_symbol else None,
+        hgvs=hgvs_for_vep,
+        chrom=chrom,
+        pos=pos,
+        ref=ref,
+        alt=alt,
+        genome_build=genome_build,
+    )
+
+    if resolution.get("error"):
+        # VEP failed — fall back to basic parsing
+        logger.warning("VEP resolution failed: %s", resolution["error"])
+        warnings.append(resolution["error"])
         if gene_symbol:
             updates["gene_symbol"] = gene_symbol.upper()
+        if cdna:
+            updates["hgvs_on_transcript"] = (
+                f"{transcript}:{cdna}" if transcript
+                else f"{gene_symbol} {cdna}" if gene_symbol
+                else state["raw_input"]
+            )
+        else:
+            updates["hgvs_on_transcript"] = state["raw_input"]
         updates["warnings"] = warnings
         return updates
 
-    if not gene_symbol:
-        updates["input_parse_error"] = "Could not determine gene symbol from input"
-        updates["errors"] = state.get("errors", []) + [
-            "Could not determine gene symbol from input"
-        ]
-        return updates
+    transcripts = resolution.get("transcripts", [])
+    resolved_gene = resolution.get("gene_symbol", gene_symbol or "")
 
-    gene_symbol = gene_symbol.upper()
-    updates["gene_symbol"] = gene_symbol
+    if resolved_gene:
+        updates["gene_symbol"] = resolved_gene.upper()
 
-    # ---- Step 2: Fetch transcripts (cache-first) ----
-    transcripts = _cache.get_transcripts(gene_symbol, genome_build)
-    if transcripts is None:
-        logger.info("Cache miss for %s — calling Ensembl", gene_symbol)
-        transcripts = get_transcripts_for_gene(gene_symbol, genome_build)
-        if transcripts:
-            _cache.set_transcripts(gene_symbol, genome_build, transcripts)
-    else:
-        logger.info("Cache hit for %s — %d transcripts", gene_symbol, len(transcripts))
+    if resolution.get("gene_full_name"):
+        updates["gene_full_name"] = resolution["gene_full_name"]
 
     if not transcripts:
-        # Proceed without transcript resolution
-        warnings.append(f"No Ensembl transcripts found for {gene_symbol}")
-        updates["hgvs_on_transcript"] = f"{gene_symbol} {cdna}" if cdna else gene_symbol
+        warnings.append("No protein-coding transcripts found for this variant")
+        if cdna and gene_symbol:
+            updates["hgvs_on_transcript"] = f"{gene_symbol} {cdna}"
+        else:
+            updates["hgvs_on_transcript"] = state["raw_input"]
         updates["warnings"] = warnings
         return updates
 
-    # ---- Step 3: Gene aliases and full name ----
+    # ---- Step 4: Get gene aliases ----
+    gene_upper = (resolved_gene or "").upper()
     try:
-        gene_info = get_gene_aliases(gene_symbol)
+        gene_info = get_gene_aliases(gene_upper)
         updates["gene_aliases"] = gene_info.get("aliases", [])
-        updates["gene_full_name"] = gene_info.get("full_name", "")
-        # Propagate aliases to transcript records
-        for tx in transcripts:
-            tx["gene_aliases"] = gene_info.get("aliases", [])
-            tx["gene_full_name"] = gene_info.get("full_name", "")
+        if gene_info.get("full_name"):
+            updates["gene_full_name"] = gene_info["full_name"]
     except Exception as e:
         logger.warning("Gene alias lookup failed: %s", e)
 
-    # ---- Step 4: Count pathogenic submissions per transcript ----
+    # ---- Step 5: Get ClinVar pathogenic counts → most reported transcript ----
     try:
-        path_counts = count_pathogenic_submissions_per_transcript(gene_symbol)
+        path_counts = count_pathogenic_submissions_per_transcript(gene_upper)
         if path_counts:
             top_nm = path_counts.most_common(1)[0][0]
             for tx in transcripts:
-                if tx["nm_accession"] == top_nm:
+                if tx.get("nm_accession") == top_nm:
                     tx["is_most_reported_pathogenic"] = True
+                    break
+            else:
+                # top_nm not in VEP results — check if canonical maps to it
+                for tx in transcripts:
+                    if tx.get("is_canonical") and not tx.get("nm_accession"):
+                        tx["nm_accession"] = top_nm
+                        tx["is_most_reported_pathogenic"] = True
+                        break
     except Exception as e:
         logger.warning("Pathogenic count lookup failed: %s", e)
 
-    # ---- Step 5: Score and sort transcripts ----
-    for tx in transcripts:
-        score = 0
-        if tx.get("is_mane_select"):
-            score += 2
-        if tx.get("is_mane_plus_clinical"):
-            score += 2
-        if tx.get("is_most_reported_pathogenic"):
-            score += 1
-        tx["annotation_score"] = score
-
-    transcripts.sort(
-        key=lambda t: (-t["annotation_score"], t.get("nm_accession", "")),
-    )
-
+    # ---- Step 6: Rank transcripts ----
+    transcripts = _rank_transcripts(transcripts)
     updates["all_transcripts"] = transcripts
 
-    # ---- Step 6: Recode variant to all transcripts ----
-    if cdna:
-        hgvs_query = f"{gene_symbol} {cdna}"
-        # Try variant recoder for proper multi-transcript mapping
-        try:
-            recoded = recode_variant(hgvs_query, genome_build)
-            if recoded:
-                for tx in transcripts:
-                    nm = tx.get("nm_accession", "")
-                    enst = tx.get("enst_accession", "")
-                    # Look up by both NM_ and ENST
-                    equiv = recoded.get(nm) or recoded.get(enst) or ""
-                    tx["equivalent_hgvs"] = equiv
-            else:
-                # Fallback: assume the cdna notation is valid on all transcripts
-                for tx in transcripts:
-                    if tx.get("nm_accession"):
-                        tx["equivalent_hgvs"] = f"{tx['nm_accession']}:{cdna}"
-        except Exception as e:
-            logger.warning("Variant recoder failed: %s — using fallback", e)
-            for tx in transcripts:
-                if tx.get("nm_accession"):
-                    tx["equivalent_hgvs"] = f"{tx['nm_accession']}:{cdna}"
-
     # ---- Step 7: Select best transcript ----
-    selected = transcripts[0] if transcripts else None
-    if selected:
-        updates["selected_transcript"] = (
-            selected.get("nm_accession") or selected.get("enst_accession")
-        )
+    selected = transcripts[0]
+    sel_id = selected.get("nm_accession") or selected.get("enst_accession", "")
+    updates["selected_transcript"] = sel_id
 
     # ---- Step 8: Set hgvs_on_transcript ----
-    if selected and selected.get("equivalent_hgvs"):
-        updates["hgvs_on_transcript"] = selected["equivalent_hgvs"]
-    elif selected and cdna:
-        nm = selected.get("nm_accession")
-        if nm:
-            updates["hgvs_on_transcript"] = f"{nm}:{cdna}"
-        else:
-            updates["hgvs_on_transcript"] = f"{gene_symbol} {cdna}"
+    sel_hgvsc = selected.get("hgvsc", "")
+    if sel_hgvsc:
+        updates["hgvs_on_transcript"] = sel_hgvsc
+    elif selected.get("nm_accession") and cdna:
+        updates["hgvs_on_transcript"] = f"{selected['nm_accession']}:{cdna}"
+    elif cdna and gene_symbol:
+        updates["hgvs_on_transcript"] = f"{gene_symbol} {cdna}"
     else:
         updates["hgvs_on_transcript"] = state["raw_input"]
 
+    # Set coordinates if available
+    if chrom:
+        updates["chrom"] = str(chrom).lstrip("chr").upper()
+        updates["pos"] = pos
+        updates["ref"] = ref
+        updates["alt"] = alt
+
     updates["warnings"] = warnings
     logger.info(
-        "input_parser_node: gene=%s, transcript=%s, hgvs=%s, %d transcripts",
-        updates.get("gene_symbol"),
-        updates.get("selected_transcript"),
-        updates.get("hgvs_on_transcript"),
-        len(transcripts),
+        "input_parser_node: gene=%s, tx=%s, hgvs=%s, %d transcripts",
+        updates.get("gene_symbol"), sel_id,
+        updates.get("hgvs_on_transcript"), len(transcripts),
     )
     return updates

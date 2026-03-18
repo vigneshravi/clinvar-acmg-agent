@@ -155,6 +155,19 @@ def count_pathogenic_submissions_per_transcript(
 # ClinVar record fetch
 # ---------------------------------------------------------------------------
 
+def _expand_dup_notation(desc: str) -> list[str]:
+    """Expand bare 'dup' notation to include each possible base.
+
+    ClinVar often stores duplications with the base (e.g. c.5266dupC)
+    but HGVS v2 normalizes to bare 'dup' (e.g. c.5266dup).
+    Returns list of variants with each base appended.
+    """
+    # Only expand if the description ends with 'dup' and no base follows
+    if re.search(r"dup$", desc, re.IGNORECASE):
+        return [f"{desc}{base}" for base in "ACGT"]
+    return []
+
+
 def _build_clinvar_search_queries(variant: str) -> list[str]:
     """Build ranked ClinVar search queries from a variant string."""
     queries = []
@@ -165,6 +178,12 @@ def _build_clinvar_search_queries(variant: str) -> list[str]:
         queries.append(f"{variant}[HGVS]")
         queries.append(f"{variant}[Variant name]")
         queries.append(variant)
+        # For bare dup notation, also try with each base
+        if ":" in variant:
+            cdna = variant.split(":")[-1]
+            tx_part = variant.split(":")[0]
+            for expanded in _expand_dup_notation(cdna):
+                queries.append(f"{tx_part}:{expanded}[Variant name]")
 
     # Gene + variant pattern
     match = re.match(r"^([A-Za-z0-9_-]+)\s+(.+)$", variant)
@@ -174,6 +193,9 @@ def _build_clinvar_search_queries(variant: str) -> list[str]:
         queries.append(f"{gene}[gene] AND {desc}[Variant name]")
         if desc.startswith("c."):
             queries.append(f"{gene}[gene] AND {desc[2:]}[Variant name]")
+        # Also try dup base expansion
+        for expanded in _expand_dup_notation(desc):
+            queries.append(f"{gene}[gene] AND {expanded}[Variant name]")
         queries.append(f"{gene}[gene] AND {desc}")
 
     if variant not in queries:
@@ -294,28 +316,53 @@ def _parse_clinvar_esummary(xml_text: str) -> dict[str, Any]:
     return result
 
 
-def _validate_clinvar_result(result: dict[str, Any], variant: str) -> bool:
-    """Check if a ClinVar result plausibly matches the queried variant."""
-    hgvs = (result.get("hgvs") or "").lower()
+def _extract_cdna_position(hgvs: str) -> str:
+    """Extract the core cDNA position from an HGVS string (e.g. '5266')."""
+    m = re.search(r"c\.(\d+)", hgvs)
+    return m.group(1) if m else ""
+
+
+def _extract_variant_type(hgvs: str) -> str:
+    """Extract variant type from HGVS (dup/del/>/delins)."""
+    for vtype in ["delins", "dup", "del", "ins", ">"]:
+        if vtype in hgvs.lower():
+            return vtype
+    return ""
+
+
+def _validate_clinvar_result_strict(result: dict[str, Any], variant: str) -> bool:
+    """Strictly validate that a ClinVar result matches the query.
+
+    Checks both the cDNA position AND variant type to catch cases where
+    ClinVar returns a different variant at a nearby position.
+    """
+    result_hgvs = (result.get("hgvs") or "").lower()
     variant_lower = variant.lower().strip()
 
-    # For transcript-level queries like NM_007294.4:c.5266dupC
+    # Extract cdna part from query
+    query_cdna = ""
     if ":" in variant_lower:
-        # Check if position digits appear
-        digits = re.findall(r"\d+", variant_lower.split(":")[-1])
-        if digits and digits[0] in hgvs:
-            return True
+        query_cdna = variant_lower.split(":")[-1]
+    else:
+        m = re.match(r"^[A-Za-z0-9_-]+\s+(.+)$", variant_lower)
+        if m:
+            query_cdna = m.group(1).strip()
 
-    match = re.match(r"^([A-Za-z0-9_-]+)\s+(.+)$", variant_lower)
-    if match:
-        gene = match.group(1)
-        desc = match.group(2).strip()
-        if gene not in hgvs:
-            return False
-        desc_core = desc.lstrip("c.")
-        desc_digits = re.findall(r"\d+", desc_core)
-        if desc_digits and desc_digits[0] in hgvs:
-            return True
+    if not query_cdna:
+        return True  # can't validate
+
+    query_pos = _extract_cdna_position(query_cdna)
+    result_pos = _extract_cdna_position(result_hgvs)
+
+    if query_pos and result_pos and query_pos != result_pos:
+        return False
+
+    query_type = _extract_variant_type(query_cdna)
+    result_type = _extract_variant_type(result_hgvs)
+
+    if query_type and result_type and query_type != result_type:
+        return False
+
     return True
 
 
@@ -344,44 +391,56 @@ def fetch_clinvar_record(variant: str) -> dict[str, Any]:
 
     try:
         queries = _build_clinvar_search_queries(variant)
-        id_list: list[str] = []
+        seen_ids: set[str] = set()
+        best_match = None
+        fallback = None
 
         for query in queries:
             handle = Entrez.esearch(db="clinvar", term=query, retmax=5)
             search_results = Entrez.read(handle)
             handle.close()
             id_list = search_results.get("IdList", [])
-            if id_list:
+            if not id_list:
+                continue
+
+            for clinvar_id in id_list[:3]:
+                if clinvar_id in seen_ids:
+                    continue
+                seen_ids.add(clinvar_id)
+
+                handle = Entrez.esummary(db="clinvar", id=clinvar_id)
+                xml_text = handle.read()
+                handle.close()
+                if isinstance(xml_text, bytes):
+                    xml_text = xml_text.decode("utf-8")
+                candidate = _parse_clinvar_esummary(xml_text)
+
+                if not candidate.get("variant_id"):
+                    continue
+
+                # Keep first result as fallback
+                if fallback is None:
+                    fallback = candidate
+
+                # Strict validation: position + type must match
+                if _validate_clinvar_result_strict(candidate, variant):
+                    if best_match is None:
+                        best_match = candidate
+                    elif candidate.get("star_rating", 0) > best_match.get("star_rating", 0):
+                        best_match = candidate
+
+            # If we found a validated match with decent stars, stop
+            if best_match and best_match.get("star_rating", 0) >= 2:
                 break
 
-        if not id_list:
+        result = best_match or fallback
+        if result is None:
             return empty_result
 
-        # Fetch and validate
-        result = None
-        for clinvar_id in id_list[:3]:
-            handle = Entrez.esummary(db="clinvar", id=clinvar_id)
-            xml_text = handle.read()
-            handle.close()
-            if isinstance(xml_text, bytes):
-                xml_text = xml_text.decode("utf-8")
-            candidate = _parse_clinvar_esummary(xml_text)
-            if _validate_clinvar_result(candidate, variant):
-                result = candidate
-                break
-
-        if result is None:
-            handle = Entrez.esummary(db="clinvar", id=id_list[0])
-            xml_text = handle.read()
-            handle.close()
-            if isinstance(xml_text, bytes):
-                xml_text = xml_text.decode("utf-8")
-            result = _parse_clinvar_esummary(xml_text)
-
         if not result["variant_id"]:
-            result["variant_id"] = id_list[0]
+            result["variant_id"] = list(seen_ids)[0] if seen_ids else None
 
-        # Detect conflicting interpretations from significance string
+        # Detect conflicting interpretations
         sig = (result.get("clinical_significance") or "").lower()
         if "conflicting" in sig:
             result["conflicting_interpretations"] = True
