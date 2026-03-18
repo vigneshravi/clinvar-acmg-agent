@@ -313,6 +313,16 @@ def _parse_clinvar_esummary(xml_text: str) -> dict[str, Any]:
     # Compute star rating
     result["star_rating"] = _get_star_rating(result["review_status"])
 
+    # Extract rsID from dbSNP xref
+    for xref in doc.findall(".//variation_xref"):
+        db_source = xref.find("db_source")
+        db_id = xref.find("db_id")
+        if (db_source is not None and db_id is not None
+                and "dbsnp" in (db_source.text or "").lower()
+                and db_id.text):
+            result["rsid"] = f"rs{db_id.text}"
+            break
+
     return result
 
 

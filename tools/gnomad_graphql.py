@@ -121,6 +121,34 @@ def query_gnomad_variant(
     return _parse_gnomad_response(variant_data)
 
 
+def query_gnomad_by_rsid(
+    rsid: str, genome_build: str = "GRCh38"
+) -> Optional[dict[str, Any]]:
+    """Query gnomAD by rsID — useful when VCF normalization differs."""
+    dataset = DATASET_MAP.get(genome_build, "gnomad_r4")
+    query = (
+        f'{{variant(rsid: "{rsid}", dataset: {dataset}) '
+        f'{{variant_id rsid '
+        f'exome {{ac an af homozygote_count populations {{id ac an homozygote_count}}}} '
+        f'genome {{ac an af homozygote_count populations {{id ac an homozygote_count}}}}'
+        f'}}}}'
+    )
+    payload = _json.dumps({"query": query}).encode("utf-8")
+    try:
+        req = Request(GNOMAD_API, data=payload, method="POST")
+        req.add_header("Content-Type", "application/json")
+        with urlopen(req, timeout=20) as resp:
+            data = _json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        logger.error("gnomAD rsID query failed: %s", exc)
+        return None
+
+    variant_data = (data.get("data") or {}).get("variant")
+    if not variant_data:
+        return None
+    return _parse_gnomad_response(variant_data)
+
+
 def _parse_gnomad_response(data: dict) -> dict[str, Any]:
     """Parse gnomAD GraphQL response into structured dict."""
     result: dict[str, Any] = {

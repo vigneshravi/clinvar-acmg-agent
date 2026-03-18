@@ -1,0 +1,103 @@
+(base) LSKI4073:clinvar-acmg-agent vravichandran$ python classify_variant.py "BRCA1 c.5266dupC"
+
+Classifying variant: BRCA1 c.5266dupC
+Querying ClinVar and running ACMG classification...
+
+/Users/vravichandran/Documents/Rutgers_DHI/BINF_5550_GenerativeAIforHealthCare/Assignment4_LangChainAgent/clinvar-acmg-agent/classify_variant.py:735: LangGraphDeprecatedSinceV10: create_react_agent has been moved to `langchain.agents`. Please update your import to `from langchain.agents import create_agent`. Deprecated in LangGraph V1.0 to be removed in V2.0.
+  agent = create_react_agent(
+
+========================================================================
+  ClinVar ACMG Variant Classifier
+========================================================================
+
+  Variant Query:  BRCA1 c.5266dupC
+
+------------------------------------------------------------------------
+  CLINVAR RECORD
+------------------------------------------------------------------------
+  Variant ID:              17677
+  Gene:                    BRCA1
+  HGVS:                    NM_007294.4(BRCA1):c.5266dup (p.Gln1756fs)
+  Clinical Significance:   Pathogenic
+  Review Status:           ★★★☆  (reviewed by expert panel)
+  Submitter Count:         91
+  Condition:               Breast-ovarian cancer, familial, susceptibility to, 1
+  Last Evaluated:          2016/04/22 00:00
+
+------------------------------------------------------------------------
+  ACMG CRITERIA TRIGGERED
+------------------------------------------------------------------------
+  [PATH] PS1 (Strong)
+         ClinVar classifies this variant as pathogenic with 3-star
+         review status and 91 submitters, indicating an established
+         pathogenic amino acid change.
+
+  [PATH] PP5 (Strong)
+         ClinVar reports this variant as 'pathogenic' with 3-star review
+         status (reviewed by expert panel). Upgraded to Strong evidence
+         per ClinGen recommendation for expert panel / practice
+         guideline level review.
+
+------------------------------------------------------------------------
+  FINAL CLASSIFICATION
+------------------------------------------------------------------------
+
+  >>> Pathogenic <<<
+  Confidence: High
+
+  Reasoning:
+    ACMG criteria combination met for Pathogenic: 0 Very Strong, 2
+    Strong, 0 Moderate, 0 Supporting pathogenic criteria triggered.
+
+    Additional AI analysis: ## Variant Classification: **PATHOGENIC**
+
+    ### Variant Details - **Gene:** BRCA1 - **HGVS:**
+    NM_007294.4(BRCA1):c.5266dup - **Protein Change:** p.Gln1756fs
+    (frameshift) - **ClinVar ID:** 17677
+
+    ### Clinical Significance **Pathogenic** - This classification has
+    been **reviewed by expert panel** (the highest level of review
+    status in ClinVar), with 91 submitters and no conflicting
+    interpretations.
+
+    ### ACMG/AMP Criteria Applied
+
+    #### **PVS1 (Very Strong - Pathogenic)** This variant is a
+    **frameshift mutation** (duplication causing a frameshift) that
+    results in: - A premature termination codon (nonsense-mediated decay
+    expected) - Loss of function of BRCA1, a well-established tumor
+    suppressor gene - The frameshift occurs at codon 1756, which is in a
+    critical region of the protein and leads to loss of the C-terminal
+    BRCT domains essential for BRCA1 function
+
+    #### **PS3/PS4 (Strong - Pathogenic)** - **PS3:** Well-established
+    functional studies show loss of BRCA1 function leads to impaired DNA
+    repair - **PS4:** The variant prevalence in affected individuals is
+    significantly increased compared to controls (this is one of the
+    most common BRCA1 pathogenic variants, particularly in the Ashkenazi
+    Jewish population, known as 5382insC in legacy nomenclature)
+
+    #### **PP5 (Supporting - Pathogenic)** - Reputable source (ClinVar
+    expert panel) reports this variant as pathogenic - 91 submitters
+    with consensus classification - No conflicting interpretations
+
+    ### Clinical Context This variant is associated with **Hereditary
+    Breast and Ovarian Cancer Syndrome (HBOC)**. Individuals carrying
+    this pathogenic variant have significantly elevated lifetime risks
+    for: - Breast cancer (up to 70-80%) - Ovarian cancer (up to 40-50%)
+    - Other cancers (pancreatic, prostate in males)
+
+    ### Recommendation This variant meets criteria for a **Pathogenic**
+    classification and warrants: - Enhanced cancer surveillance
+    protocols - Risk-reducing surgical options discussion - Cascade
+    testing for at-risk family members - Consideration for PARP
+    inhibitor therapy if cancer develops
+
+    The expert panel review status and overwhelming evidence from
+    multiple submitters provides high confidence in this classification.
+
+------------------------------------------------------------------------
+  DISCLAIMER: This is an AI-assisted research tool and should not be used for clinical decision-making. Variant classifications should be reviewed by a certified clinical molecular geneticist and confirmed through validated clinical-grade processes.
+========================================================================
+
+

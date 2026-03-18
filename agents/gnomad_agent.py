@@ -12,7 +12,7 @@ import re
 from typing import Any, Optional
 
 from graph.state import VariantState
-from tools.gnomad_graphql import query_gnomad_variant
+from tools.gnomad_graphql import query_gnomad_by_rsid, query_gnomad_variant
 from tools.myvariant import query_myvariant
 
 logger = logging.getLogger(__name__)
@@ -209,22 +209,24 @@ def gnomad_agent_node(state: VariantState) -> dict[str, Any]:
     alt_allele = state.get("alt")
     genome_build = state.get("genome_build", "GRCh38")
 
-    # If we don't have coordinates, try to get them from VEP via the
-    # hgvs_on_transcript (VEP can resolve transcript HGVS to coordinates)
+    # Extract rsID from ClinVar if available (most reliable for gnomAD lookup)
+    clinvar = state.get("clinvar") or {}
+    rsid_from_clinvar = clinvar.get("rsid")
+
+    # VCF-style gnomAD variant ID (chrom-pos-ref-alt format)
+    gnomad_variant_id = None
+
+    # If we don't have coordinates, resolve via VEP (also gets vcf_string)
     if not (chrom and pos and ref_allele and alt_allele):
         hgvs = state.get("hgvs_on_transcript", "")
         if hgvs:
-            logger.info("gnomad_agent: no coordinates in state, calling VEP for %s", hgvs)
+            logger.info("gnomad_agent: resolving coordinates via VEP for %s", hgvs)
             try:
-                from tools.ensembl import vep_annotate_hgvs
-                vep_results = vep_annotate_hgvs(hgvs, genome_build)
-                # VEP doesn't directly return genomic coords in transcript_consequences
-                # We need the top-level response — re-call with a different approach
                 from tools.ensembl import _ensembl_get, _base_url
                 from urllib.parse import quote
                 base = _base_url(genome_build)
                 encoded = quote(hgvs, safe="")
-                url = f"{base}/vep/homo_sapiens/hgvs/{encoded}?content-type=application/json"
+                url = f"{base}/vep/homo_sapiens/hgvs/{encoded}?vcf_string=1"
                 vep_raw = _ensembl_get(url)
                 if vep_raw and isinstance(vep_raw, list) and vep_raw:
                     entry = vep_raw[0]
@@ -235,10 +237,16 @@ def gnomad_agent_node(state: VariantState) -> dict[str, Any]:
                         parts = allele_string.split("/")
                         ref_allele = parts[0]
                         alt_allele = parts[1] if len(parts) > 1 else ""
+
+                    # Get vcf_string for gnomAD ID (forward strand, VCF-normalized)
+                    vcf_string = entry.get("vcf_string", "")
+                    if vcf_string and "-" in vcf_string:
+                        gnomad_variant_id = vcf_string
+                        logger.info("gnomad_agent: VEP vcf_string = %s", vcf_string)
                     logger.info("gnomad_agent: VEP resolved to %s:%s %s>%s",
                                 chrom, pos, ref_allele, alt_allele)
             except Exception as e:
-                logger.warning("gnomad_agent: VEP coordinate resolution failed: %s", e)
+                logger.warning("gnomad_agent: VEP resolution failed: %s", e)
 
     if not (chrom and pos):
         warnings.append("Could not determine genomic coordinates — gnomAD/dbNSFP lookup skipped")
@@ -248,24 +256,48 @@ def gnomad_agent_node(state: VariantState) -> dict[str, Any]:
         return updates
 
     # ---- Step 1: Query gnomAD GraphQL ----
+    # Strategy: try multiple variant ID formats since gnomAD requires
+    # left-aligned VCF normalization which may differ from VEP output
     gnomad_data = None
-    rsid = None
+    rsid = rsid_from_clinvar
+
+    # Build list of variant IDs to try
+    gnomad_ids_to_try = []
+    if gnomad_variant_id:
+        # VEP vcf_string (forward strand)
+        gnomad_ids_to_try.append(gnomad_variant_id)
+    if chrom and pos and ref_allele and alt_allele:
+        # Direct from coordinates
+        direct_id = f"{str(chrom).lstrip('chr')}-{pos}-{ref_allele}-{alt_allele}"
+        if direct_id not in gnomad_ids_to_try:
+            gnomad_ids_to_try.append(direct_id)
+
     try:
-        gnomad_data = query_gnomad_variant(
-            chrom, pos, ref_allele or "", alt_allele or "", genome_build
-        )
-        if gnomad_data:
-            rsid = gnomad_data.get("rsid")
-            logger.info(
-                "gnomAD: found variant %s, AF=%s, rsid=%s",
-                gnomad_data.get("variant_id"),
-                gnomad_data.get("global_af"),
-                rsid,
-            )
-        else:
-            logger.info("gnomAD: variant not found at %s:%s", chrom, pos)
+        # Try each variant ID
+        for vid in gnomad_ids_to_try:
+            parts = vid.split("-")
+            if len(parts) == 4:
+                gnomad_data = query_gnomad_variant(
+                    parts[0], int(parts[1]), parts[2], parts[3], genome_build
+                )
+                if gnomad_data:
+                    rsid = gnomad_data.get("rsid") or rsid
+                    logger.info("gnomAD: found via ID %s, AF=%s",
+                                vid, gnomad_data.get("global_af"))
+                    break
+
+        # If not found by coordinate, try rsID lookup
+        if not gnomad_data and rsid:
+            gnomad_data = query_gnomad_by_rsid(rsid, genome_build)
+            if gnomad_data:
+                rsid = gnomad_data.get("rsid") or rsid
+                logger.info("gnomAD: found via rsID %s, AF=%s",
+                            rsid, gnomad_data.get("global_af"))
+
+        if not gnomad_data:
+            logger.info("gnomAD: variant not found")
     except Exception as e:
-        logger.warning("gnomAD GraphQL query failed: %s", e)
+        logger.warning("gnomAD query failed: %s", e)
         warnings.append(f"gnomAD query failed: {str(e)}")
 
     # ---- Step 2: Query MyVariant.info for dbNSFP + CADD ----
