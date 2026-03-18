@@ -209,6 +209,29 @@ if "parser_output" in st.session_state:
 
         # Show variant annotation for selected transcript
         chosen = transcripts[selected_idx] if selected_idx is not None else top
+
+        # Genomic coordinates bar (chr, pos, ref, alt, strand)
+        po_chrom = po.get("chrom")
+        po_pos = po.get("pos")
+        po_ref = po.get("ref")
+        po_alt = po.get("alt")
+        strand_val = chosen.get("strand")
+        strand_str = "+" if strand_val == 1 else "-" if strand_val == -1 else ""
+
+        if po_chrom and po_pos:
+            coord_cols = st.columns(5)
+            with coord_cols[0]:
+                st.metric("Chr", f"chr{po_chrom}")
+            with coord_cols[1]:
+                st.metric("Position", f"{po_pos:,}")
+            with coord_cols[2]:
+                st.metric("Ref / Alt", f"{po_ref} > {po_alt}")
+            with coord_cols[3]:
+                st.metric("Strand", strand_str if strand_str else "N/A")
+            with coord_cols[4]:
+                st.metric("Build", genome_build)
+
+        # Consequence annotation
         annot_cols = st.columns(4)
         with annot_cols[0]:
             pos_type = chosen.get("position_type", "unknown")

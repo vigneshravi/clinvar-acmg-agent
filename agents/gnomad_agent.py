@@ -17,6 +17,7 @@ from tools.gnomad_graphql import (
     query_gnomad_by_rsid,
     query_gnomad_variant,
 )
+from tools.vcf_normalize import normalize_vep_vcf_string
 from tools.myvariant import query_myvariant
 
 logger = logging.getLogger(__name__)
@@ -242,20 +243,20 @@ def gnomad_agent_node(state: VariantState) -> dict[str, Any]:
                         ref_allele = parts[0]
                         alt_allele = parts[1] if len(parts) > 1 else ""
 
-                    # Get vcf_string for gnomAD ID (forward strand, VCF-normalized)
+                    # Get vcf_string and left-align for correct gnomAD lookup
                     vcf_string = entry.get("vcf_string", "")
                     if vcf_string and "-" in vcf_string:
-                        gnomad_variant_id = vcf_string
-                        # Parse VCF-normalized coords for state
-                        vcf_parts = vcf_string.split("-")
-                        if len(vcf_parts) == 4:
-                            chrom = vcf_parts[0]
-                            pos = int(vcf_parts[1])
-                            ref_allele = vcf_parts[2]
-                            alt_allele = vcf_parts[3]
-
-                    # Store strand from VEP
-                    strand = entry.get("strand")
+                        # Left-align to match gnomAD's normalization
+                        norm_chrom, norm_pos, norm_ref, norm_alt = (
+                            normalize_vep_vcf_string(vcf_string, genome_build)
+                        )
+                        chrom = norm_chrom
+                        pos = norm_pos
+                        ref_allele = norm_ref
+                        alt_allele = norm_alt
+                        gnomad_variant_id = f"{norm_chrom}-{norm_pos}-{norm_ref}-{norm_alt}"
+                        logger.info("gnomad_agent: left-aligned %s → %s",
+                                    vcf_string, gnomad_variant_id)
 
                     # Write coordinates back to state
                     updates["chrom"] = chrom
@@ -263,8 +264,8 @@ def gnomad_agent_node(state: VariantState) -> dict[str, Any]:
                     updates["ref"] = ref_allele
                     updates["alt"] = alt_allele
 
-                    logger.info("gnomad_agent: VEP resolved to %s:%s %s>%s (strand=%s)",
-                                chrom, pos, ref_allele, alt_allele, strand)
+                    logger.info("gnomad_agent: coordinates %s:%s %s>%s",
+                                chrom, pos, ref_allele, alt_allele)
             except Exception as e:
                 logger.warning("gnomad_agent: VEP resolution failed: %s", e)
 

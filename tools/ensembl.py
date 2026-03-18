@@ -113,12 +113,20 @@ def vep_annotate_hgvs(
     from urllib.parse import quote
     base = _base_url(genome_build)
     encoded = quote(hgvs, safe="")
-    url = f"{base}/vep/homo_sapiens/hgvs/{encoded}?hgvs=1&canonical=1&numbers=1&protein=1"
+    url = f"{base}/vep/homo_sapiens/hgvs/{encoded}?hgvs=1&canonical=1&numbers=1&protein=1&vcf_string=1"
     data = _ensembl_get(url)
     if not data or not isinstance(data, list):
         return []
     results = []
     for entry in data:
+        # Extract genomic-level info (shared across all transcript consequences)
+        _genomic_info = {
+            "seq_region_name": entry.get("seq_region_name", ""),
+            "start": entry.get("start"),
+            "end": entry.get("end"),
+            "vcf_string": entry.get("vcf_string", ""),
+            "allele_string": entry.get("allele_string", ""),
+        }
         for tc in entry.get("transcript_consequences", []):
             results.append({
                 "transcript_id": tc.get("transcript_id", ""),
@@ -136,6 +144,10 @@ def vep_annotate_hgvs(
                 "amino_acids": tc.get("amino_acids", ""),
                 "codons": tc.get("codons", ""),
                 "strand": tc.get("strand"),
+                # Genomic-level info
+                "vcf_string": _genomic_info.get("vcf_string", ""),
+                "genomic_chrom": _genomic_info.get("seq_region_name", ""),
+                "genomic_start": _genomic_info.get("start"),
             })
     return results
 
@@ -238,6 +250,23 @@ def resolve_transcripts(
         result["error"] = "VEP could not annotate this variant on any transcript"
         return result
 
+    # Extract genomic coordinates from VEP and left-align
+    vcf_string = ""
+    for vr in vep_results:
+        if vr.get("vcf_string"):
+            vcf_string = vr["vcf_string"]
+            break
+    if vcf_string:
+        from tools.vcf_normalize import normalize_vep_vcf_string
+        norm_chrom, norm_pos, norm_ref, norm_alt = normalize_vep_vcf_string(
+            vcf_string, genome_build
+        )
+        result["chrom"] = norm_chrom
+        result["pos"] = norm_pos
+        result["ref"] = norm_ref
+        result["alt"] = norm_alt
+        result["vcf_string"] = f"{norm_chrom}-{norm_pos}-{norm_ref}-{norm_alt}"
+
     # Extract gene symbol from first result if not provided
     if not result["gene_symbol"]:
         for vr in vep_results:
@@ -308,6 +337,7 @@ def resolve_transcripts(
             "amino_acids": vr.get("amino_acids", ""),
             "codons": vr.get("codons", ""),
             "biotype": vr.get("biotype", ""),
+            "strand": vr.get("strand"),
         })
 
     # Step 4: Mark MANE Select (canonical = MANE Select for GRCh38)

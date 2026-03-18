@@ -143,6 +143,13 @@ def input_parser_node(state: VariantState) -> dict[str, Any]:
     if resolution.get("gene_full_name"):
         updates["gene_full_name"] = resolution["gene_full_name"]
 
+    # Store left-aligned genomic coordinates from VEP
+    if resolution.get("chrom"):
+        updates["chrom"] = resolution["chrom"]
+        updates["pos"] = resolution["pos"]
+        updates["ref"] = resolution["ref"]
+        updates["alt"] = resolution["alt"]
+
     if not transcripts:
         warnings.append("No protein-coding transcripts found for this variant")
         if cdna and gene_symbol:
