@@ -64,6 +64,105 @@ Stand-alone.
 """
 
 
+def _get_selected_transcript_info(state: VariantState) -> dict[str, Any]:
+    """Extract VEP annotation for the selected transcript."""
+    sel_tx = state.get("selected_transcript", "")
+    for tx in state.get("all_transcripts") or []:
+        tid = tx.get("nm_accession") or tx.get("enst_accession")
+        if tid == sel_tx:
+            return tx
+    return {}
+
+
+def _assess_pvs1_applicability(tx_info: dict[str, Any]) -> dict[str, Any]:
+    """Assess PVS1 applicability based on exon position and consequence.
+
+    ClinGen PVS1 decision tree caveats:
+    - Last exon: truncating variants may escape NMD → downgrade to PVS1_Moderate
+    - Last 50bp of penultimate exon: may also escape NMD
+    - Missense/in-frame: PVS1 does not apply (not a null variant)
+    - Single-exon gene: NMD does not apply → downgrade
+    """
+    result = {
+        "is_null_variant": False,
+        "pvs1_applicable": False,
+        "pvs1_strength": "Very Strong",  # default if applicable
+        "pvs1_caveat": None,
+        "exon_number": None,
+        "total_exons": None,
+        "is_last_exon": False,
+        "is_penultimate_exon": False,
+        "consequence": "",
+    }
+
+    consequences = tx_info.get("consequence_terms", [])
+    exon_str = tx_info.get("exon", "")  # e.g. "19/23"
+    result["consequence"] = ", ".join(consequences)
+
+    # Check if this is a null/truncating variant
+    null_consequences = {
+        "frameshift_variant", "stop_gained", "splice_donor_variant",
+        "splice_acceptor_variant", "start_lost", "transcript_ablation",
+    }
+    is_null = bool(null_consequences & set(consequences))
+    result["is_null_variant"] = is_null
+
+    if not is_null:
+        result["pvs1_caveat"] = "Not a null/truncating variant — PVS1 does not apply"
+        return result
+
+    # Parse exon position
+    if exon_str and "/" in exon_str:
+        try:
+            parts = exon_str.split("/")
+            exon_num = int(parts[0])
+            total_exons = int(parts[1])
+            result["exon_number"] = exon_num
+            result["total_exons"] = total_exons
+
+            # Single-exon gene
+            if total_exons == 1:
+                result["pvs1_applicable"] = True
+                result["pvs1_strength"] = "Moderate"
+                result["pvs1_caveat"] = (
+                    "Single-exon gene — NMD not applicable. "
+                    "PVS1 downgraded to Moderate per ClinGen guidelines."
+                )
+                return result
+
+            # Last exon
+            if exon_num == total_exons:
+                result["is_last_exon"] = True
+                result["pvs1_applicable"] = True
+                result["pvs1_strength"] = "Moderate"
+                result["pvs1_caveat"] = (
+                    f"Variant in last exon ({exon_str}) — truncated protein "
+                    f"may escape NMD and produce a stable but altered protein. "
+                    f"PVS1 downgraded to Moderate per ClinGen PVS1 decision tree."
+                )
+                return result
+
+            # Penultimate exon (last 50bp rule handled by noting it)
+            if exon_num == total_exons - 1:
+                result["is_penultimate_exon"] = True
+                result["pvs1_applicable"] = True
+                result["pvs1_strength"] = "Strong"
+                result["pvs1_caveat"] = (
+                    f"Variant in penultimate exon ({exon_str}) — if within "
+                    f"last 50bp, truncated protein may escape NMD. "
+                    f"PVS1 downgraded to Strong per ClinGen guidelines."
+                )
+                return result
+
+        except (ValueError, IndexError):
+            pass
+
+    # Standard PVS1 — null variant not in last/penultimate exon
+    result["pvs1_applicable"] = True
+    result["pvs1_strength"] = "Very Strong"
+    return result
+
+
 def _build_evidence_prompt(state: VariantState) -> str:
     """Build the user prompt with all available evidence."""
     parts = []
@@ -81,6 +180,39 @@ def _build_evidence_prompt(state: VariantState) -> str:
         parts.append(f"Gene full name: {full_name}")
     if aliases:
         parts.append(f"Gene aliases: {', '.join(aliases)}")
+
+    # Transcript annotation (VEP)
+    tx_info = _get_selected_transcript_info(state)
+    pvs1 = _assess_pvs1_applicability(tx_info)
+
+    if tx_info:
+        vep_lines = [
+            "## Variant Annotation (VEP)",
+            f"- Consequence: {tx_info.get('consequence_display', 'N/A')}",
+            f"- Impact: {tx_info.get('impact', 'N/A')}",
+            f"- Exon: {tx_info.get('exon', 'N/A')}",
+            f"- Amino acid change: {tx_info.get('amino_acids', 'N/A')}",
+            f"- Position type: {tx_info.get('position_type', 'N/A')} ({tx_info.get('position_detail', '')})",
+        ]
+        if tx_info.get("intron"):
+            vep_lines.append(f"- Intron: {tx_info.get('intron', '')}")
+        parts.append("\n".join(vep_lines))
+
+    # PVS1 assessment
+    pvs1_lines = ["## PVS1 Assessment (Null Variant)"]
+    pvs1_lines.append(f"- Is null/truncating variant: {pvs1['is_null_variant']}")
+    if pvs1["is_null_variant"]:
+        pvs1_lines.append(f"- PVS1 applicable: {pvs1['pvs1_applicable']}")
+        pvs1_lines.append(f"- PVS1 strength: {pvs1['pvs1_strength']}")
+        if pvs1["exon_number"]:
+            pvs1_lines.append(f"- Exon position: {pvs1['exon_number']}/{pvs1['total_exons']}")
+            pvs1_lines.append(f"- Last exon: {pvs1['is_last_exon']}")
+            pvs1_lines.append(f"- Penultimate exon: {pvs1['is_penultimate_exon']}")
+        if pvs1["pvs1_caveat"]:
+            pvs1_lines.append(f"- CAVEAT: {pvs1['pvs1_caveat']}")
+    else:
+        pvs1_lines.append("- PVS1 does not apply (not a null/truncating variant)")
+    parts.append("\n".join(pvs1_lines))
 
     # ClinVar evidence
     clinvar = state.get("clinvar")
@@ -197,6 +329,17 @@ def _build_evidence_prompt(state: VariantState) -> str:
     parts.append(
         "## Instructions\n"
         "Evaluate ALL of the following ACMG criteria based on the evidence above:\n\n"
+        "### PVS1 — Null variant:\n"
+        "- PVS1: Null variant (frameshift, nonsense, splice site, initiation codon) "
+        "in a gene where loss of function is a known mechanism of disease.\n"
+        "- **CRITICAL CAVEATS (ClinGen PVS1 decision tree):**\n"
+        "  - LAST EXON: Truncating variants in the last exon may escape NMD "
+        "and produce a stable truncated protein → downgrade PVS1 to **Moderate**\n"
+        "  - PENULTIMATE EXON (last 50bp): May also escape NMD → downgrade to **Strong**\n"
+        "  - SINGLE-EXON GENE: NMD does not apply → downgrade to **Moderate**\n"
+        "  - NOT a null variant (missense, in-frame, synonymous): PVS1 does NOT apply\n"
+        "- Use the PVS1 Assessment section above which pre-computes these caveats. "
+        "If it says PVS1_strength=Moderate or Strong, use that strength, NOT Very Strong.\n\n"
         "### From ClinVar:\n"
         "- PS1: Same amino acid change as established pathogenic variant\n"
         "- PP5: Reputable source reports variant as pathogenic "
@@ -204,7 +347,7 @@ def _build_evidence_prompt(state: VariantState) -> str:
         "- BP6: Reputable source reports variant as benign "
         "(upgrade to Strong for expert panel 3+ stars, Moderate for 2 stars)\n"
         "- PM5: Novel missense at same position as known pathogenic missense\n\n"
-        "### From gnomAD allele frequency:\n"
+        "### From gnomAD allele frequency (using controls cohort):\n"
         "- BA1: Allele frequency >5% in any gnomAD population (Stand-alone Benign)\n"
         "- BS1: Allele frequency >1%, greater than expected for rare disease (Strong Benign)\n"
         "- PM2: Absent from gnomAD or extremely rare AF<0.01% (Supporting Pathogenic)\n\n"
@@ -214,7 +357,7 @@ def _build_evidence_prompt(state: VariantState) -> str:
         "- BP4: Multiple computational tools predict no impact (Supporting Benign)\n"
         "  REVEL<0.15, CADD<15 = benign\n\n"
         "### Rules:\n"
-        "- Use the pre-computed ACMG criteria flags (BA1_met, PM2_met, PP3_met, etc.) "
+        "- Use the pre-computed ACMG criteria flags (BA1_met, PM2_met, PP3_met, PVS1 strength) "
         "from the evidence sections — do not override them unless you have a specific reason.\n"
         "- For any criterion that cannot be evaluated, set met=false and explain why.\n"
         "- Apply ACMG combining rules to determine final classification.\n"

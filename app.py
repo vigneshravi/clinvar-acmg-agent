@@ -198,6 +198,28 @@ if "parser_output" in st.session_state:
                 f"**Impact:** {chosen.get('impact', '')} &nbsp;|&nbsp; "
                 f"**AA:** {chosen.get('amino_acids', '') or 'N/A'}"
             )
+
+            # PVS1 caveat warning for last/penultimate exon truncating variants
+            from agents.acmg_classifier import _assess_pvs1_applicability
+            pvs1_info = _assess_pvs1_applicability(chosen)
+            if pvs1_info["is_null_variant"]:
+                if pvs1_info.get("is_last_exon"):
+                    st.warning(
+                        f"\u26A0\uFE0F **PVS1 Caveat — Last exon variant** "
+                        f"(exon {pvs1_info['exon_number']}/{pvs1_info['total_exons']}): "
+                        f"Truncating variant may escape NMD. PVS1 downgraded to **Moderate**."
+                    )
+                elif pvs1_info.get("is_penultimate_exon"):
+                    st.warning(
+                        f"\u26A0\uFE0F **PVS1 Caveat — Penultimate exon** "
+                        f"(exon {pvs1_info['exon_number']}/{pvs1_info['total_exons']}): "
+                        f"If in last 50bp, may escape NMD. PVS1 downgraded to **Strong**."
+                    )
+                elif pvs1_info["total_exons"] == 1:
+                    st.warning(
+                        "\u26A0\uFE0F **PVS1 Caveat — Single-exon gene**: "
+                        "NMD not applicable. PVS1 downgraded to **Moderate**."
+                    )
     else:
         st.warning("No transcripts found. Will proceed with raw input.")
 
