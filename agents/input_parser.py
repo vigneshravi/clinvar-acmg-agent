@@ -88,22 +88,57 @@ def input_parser_node(state: VariantState) -> dict[str, Any]:
     if transcript and cdna:
         hgvs_for_vep = f"{transcript}:{cdna}"
     elif gene_symbol and cdna and not chrom:
-        # No transcript specified — look up the primary NM_ from ClinVar
-        # pathogenic submission counts (this tells us the clinically
-        # relevant transcript)
+        # No transcript specified — build a list of candidate NM_ transcripts
+        # to try with VEP. The cdna notation may only be valid on specific
+        # transcript isoforms, so we try multiple.
+        candidate_nms: list[str] = []
+
+        # Source 1: ClinVar pathogenic submission counts
         try:
             path_counts = count_pathogenic_submissions_per_transcript(
                 gene_symbol.upper()
             )
             if path_counts:
-                primary_nm = path_counts.most_common(1)[0][0]
-                hgvs_for_vep = f"{primary_nm}:{cdna}"
-                logger.info(
-                    "input_parser: using primary NM_ %s for VEP query",
-                    primary_nm,
-                )
+                candidate_nms.extend(nm for nm, _ in path_counts.most_common(5))
         except Exception as e:
-            logger.warning("Could not get primary NM_ for VEP: %s", e)
+            logger.warning("Could not get NMs from ClinVar: %s", e)
+
+        # Source 2: Ensembl canonical transcript
+        try:
+            from tools.ensembl import _ensembl_get, _base_url, enst_to_nm
+            base = _base_url(genome_build)
+            gene_data = _ensembl_get(
+                f"{base}/lookup/symbol/homo_sapiens/{gene_symbol.upper()}?expand=1"
+            )
+            if gene_data:
+                for tx in gene_data.get("Transcript", []):
+                    if tx.get("is_canonical") and tx.get("biotype") == "protein_coding":
+                        enst = tx.get("id", "")
+                        nm = enst_to_nm(enst, genome_build)
+                        if nm and nm not in candidate_nms:
+                            candidate_nms.append(nm)
+                        # Keep ENST as last resort
+                        if enst not in candidate_nms:
+                            candidate_nms.append(enst)
+                        break
+        except Exception as e:
+            logger.warning("Ensembl canonical lookup failed: %s", e)
+
+        # Try each candidate until VEP accepts one
+        from tools.ensembl import vep_annotate_hgvs
+        for nm_candidate in candidate_nms:
+            test_hgvs = f"{nm_candidate}:{cdna}"
+            test_results = vep_annotate_hgvs(test_hgvs, genome_build)
+            if test_results:
+                hgvs_for_vep = test_hgvs
+                logger.info("input_parser: VEP accepted %s", test_hgvs)
+                break
+            else:
+                logger.info("input_parser: VEP rejected %s, trying next", test_hgvs)
+
+        if not hgvs_for_vep:
+            logger.warning("input_parser: no transcript accepted by VEP for %s %s",
+                           gene_symbol, cdna)
 
     # ---- Step 3: Resolve all transcripts ----
     logger.info("input_parser_node: resolving transcripts via VEP")
