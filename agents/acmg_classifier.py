@@ -291,14 +291,44 @@ def _build_evidence_prompt(state: VariantState) -> str:
             "Not available — BA1, BS1, PM2, PP3, BP4 cannot be evaluated."
         )
 
-    # PubMed
-    if state.get("pubmed"):
-        parts.append(f"## PubMed Evidence\n{json.dumps(state['pubmed'], indent=2)}")
+    # Literature evidence (LitVar)
+    pubmed = state.get("pubmed")
+    if pubmed and isinstance(pubmed, dict) and pubmed.get("available"):
+        lit_lines = [
+            "## Literature Evidence (LitVar)",
+            f"- Total publications: {pubmed.get('pmids_count', 0)}",
+            f"- Case reports: {pubmed.get('case_report_count', 0)}",
+            f"- Functional studies: {pubmed.get('functional_study_count', 0)}",
+            f"- Reviews: {pubmed.get('review_count', 0)}",
+            f"- Clinical significance (literature): {pubmed.get('clinical_significance', 'N/A')}",
+            f"- First published: {pubmed.get('first_published', 'N/A')}",
+        ]
+        diseases = pubmed.get("diseases", [])
+        if diseases:
+            lit_lines.append("- Disease associations:")
+            for dname, dcount in diseases[:5]:
+                lit_lines.append(f"  - {dname}: {dcount} publications")
+
+        pubs = pubmed.get("publications", [])
+        if pubs:
+            lit_lines.append(f"- Recent publications ({len(pubs)} shown):")
+            for pub in pubs[:10]:
+                title = pub.get("title", "")[:80]
+                year = pub.get("year", "")
+                types = ", ".join(pub.get("pub_types", []))
+                lit_lines.append(f"  - [{year}] {title}... ({types})")
+
+        related_genes = pubmed.get("related_genes", [])
+        if related_genes:
+            lit_lines.append("- Related genes in literature: " +
+                             ", ".join(g["name"] for g in related_genes[:5]))
+
+        parts.append("\n".join(lit_lines))
     else:
         parts.append(
-            "## PubMed Evidence\n"
-            "Not available — PS3/BS3 (functional studies), PP1/BS4 "
-            "(co-segregation) cannot be evaluated."
+            "## Literature Evidence\n"
+            "Not available — PS3/BS3 (functional studies), PS4 (case reports) "
+            "cannot be fully evaluated from literature."
         )
 
     # AlphaFold / PDB
@@ -340,6 +370,14 @@ def _build_evidence_prompt(state: VariantState) -> str:
         "  - NOT a null variant (missense, in-frame, synonymous): PVS1 does NOT apply\n"
         "- Use the PVS1 Assessment section above which pre-computes these caveats. "
         "If it says PVS1_strength=Moderate or Strong, use that strength, NOT Very Strong.\n\n"
+        "### From Literature (LitVar):\n"
+        "- PS3: Well-established functional studies showing damaging effect (Strong Pathogenic)\n"
+        "  Look for research support / comparative / functional study publication types.\n"
+        "  High publication count + disease associations supports PS3.\n"
+        "- PS4: Variant prevalence significantly increased in affected vs controls (Strong Pathogenic)\n"
+        "  Look for case reports, epidemiological studies.\n"
+        "  Multiple case reports across different populations supports PS4.\n"
+        "- If literature data unavailable, set PS3/PS4 as not evaluable.\n\n"
         "### From ClinVar:\n"
         "- PS1: Same amino acid change as established pathogenic variant\n"
         "- PP5: Reputable source reports variant as pathogenic "

@@ -457,6 +457,66 @@ if "final_state" in st.session_state:
                 cons_parts = [f"**{k}:** {v:.3f}" if isinstance(v, float) else f"**{k}:** {v}" for k, v in conservation.items()]
                 st.markdown(" &nbsp;|&nbsp; ".join(cons_parts))
 
+    # --- Literature Evidence (LitVar) ---
+    pubmed_data = fs.get("pubmed")
+    if pubmed_data and isinstance(pubmed_data, dict) and pubmed_data.get("available"):
+        with st.expander("\U0001f4da Literature Evidence (LitVar)", expanded=True):
+            rsid_lit = pubmed_data.get("rsid", "")
+            litvar_link = f"[LitVar](https://www.ncbi.nlm.nih.gov/research/litvar2/docsum?query={rsid_lit})" if rsid_lit else ""
+
+            st.markdown(
+                f"**Publications:** {pubmed_data.get('pmids_count', 0)} &nbsp;|&nbsp; "
+                f"**Case Reports:** {pubmed_data.get('case_report_count', 0)} &nbsp;|&nbsp; "
+                f"**Functional Studies:** {pubmed_data.get('functional_study_count', 0)} &nbsp;|&nbsp; "
+                f"**Reviews:** {pubmed_data.get('review_count', 0)} &nbsp;|&nbsp; "
+                f"**First Published:** {pubmed_data.get('first_published', 'N/A')} &nbsp;|&nbsp; "
+                f"**Literature Significance:** {pubmed_data.get('clinical_significance', 'N/A')} &nbsp;|&nbsp; "
+                f"{litvar_link}"
+            )
+
+            # Disease associations
+            diseases = pubmed_data.get("diseases", [])
+            if diseases:
+                st.markdown("**Disease Associations:**")
+                disease_rows = []
+                for dname, dcount in diseases[:10]:
+                    disease_rows.append({"Disease": dname, "Publications": dcount})
+                st.dataframe(disease_rows, use_container_width=True, hide_index=True)
+
+            # Recent publications
+            pubs = pubmed_data.get("publications", [])
+            if pubs:
+                st.markdown(f"**Recent Publications** ({len(pubs)} of {pubmed_data.get('pmids_count', 0)}):")
+                pub_rows = []
+                for pub in pubs:
+                    pmid = pub.get("pmid", "")
+                    title = pub.get("title", "")[:100]
+                    year = pub.get("year", "")
+                    journal = pub.get("journal", "")
+                    types = ", ".join(pub.get("pub_types", []))
+                    pmid_link = f"[{pmid}](https://pubmed.ncbi.nlm.nih.gov/{pmid}/)"
+                    pub_rows.append({
+                        "PMID": pmid_link,
+                        "Year": year,
+                        "Title": title,
+                        "Journal": journal,
+                        "Type": types,
+                    })
+                st.dataframe(pub_rows, use_container_width=True, hide_index=True)
+
+            # Related genes and chemicals
+            related_genes = pubmed_data.get("related_genes", [])
+            related_chems = pubmed_data.get("related_chemicals", [])
+            if related_genes or related_chems:
+                rel_parts = []
+                if related_genes:
+                    gene_strs = [f"{g['name']} ({g['count']})" for g in related_genes[:5]]
+                    rel_parts.append(f"**Related Genes:** {', '.join(gene_strs)}")
+                if related_chems:
+                    chem_strs = [f"{c['name']} ({c['count']})" for c in related_chems[:5]]
+                    rel_parts.append(f"**Related Chemicals:** {', '.join(chem_strs)}")
+                st.markdown(" &nbsp;|&nbsp; ".join(rel_parts))
+
     # --- Case-Control Analysis ---
     if gnomad and af_data.get("variant_in_gnomad"):
         with st.expander("\U0001f9ea Case-Control Analysis", expanded=False):
