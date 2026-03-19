@@ -413,6 +413,62 @@ def gnomad_agent_node(state: VariantState) -> dict[str, Any]:
     if myvariant_data:
         conservation = myvariant_data.get("conservation", {})
 
+    # ---- Step 3b: Gene constraint + domain annotations ----
+    from tools.gene_constraint import (
+        get_gene_constraint, get_uniprot_domains,
+        check_domain_overlap, check_repeat_overlap,
+        assess_pm1, assess_pm4_bp3,
+    )
+
+    gene_sym = state.get("gene_symbol", "")
+    constraint = None
+    uniprot = {"domains": [], "repeats": [], "accession": "", "protein_length": 0}
+    pm1_result = {"met": False, "justification": "Not evaluated"}
+    pm4_bp3_result = {"pm4_met": False, "bp3_met": False, "justification": "Not evaluated"}
+
+    if gene_sym:
+        try:
+            constraint = get_gene_constraint(gene_sym, genome_build)
+        except Exception as e:
+            logger.warning("Gene constraint lookup failed: %s", e)
+
+        try:
+            uniprot = get_uniprot_domains(gene_sym)
+        except Exception as e:
+            logger.warning("UniProt domain lookup failed: %s", e)
+
+    # Get variant protein position and consequence from VEP transcript data
+    tx_info = {}
+    sel_tx = state.get("selected_transcript", "")
+    for tx in state.get("all_transcripts") or []:
+        tid = tx.get("nm_accession") or tx.get("enst_accession")
+        if tid == sel_tx:
+            tx_info = tx
+            break
+
+    protein_pos = tx_info.get("protein_start")
+    consequence_terms = tx_info.get("consequence_terms", [])
+
+    # PM1: functional domain + missense constraint
+    domain_hit = check_domain_overlap(protein_pos, uniprot.get("domains", []))
+    pm1_result = assess_pm1(constraint, domain_hit, consequence_terms)
+
+    # PM4/BP3: in-frame protein length change
+    in_repeat = check_repeat_overlap(protein_pos, uniprot.get("repeats", []))
+    pm4_bp3_result = assess_pm4_bp3(
+        consequence_terms,
+        tx_info.get("protein_start"),
+        tx_info.get("protein_end"),
+        in_repeat,
+    )
+
+    logger.info(
+        "gnomad_agent: PM1=%s (%s), PM4=%s, BP3=%s, constraint mis_z=%s",
+        pm1_result["met"], pm1_result.get("strength", ""),
+        pm4_bp3_result["pm4_met"], pm4_bp3_result["bp3_met"],
+        constraint.get("mis_z") if constraint else "N/A",
+    )
+
     # ---- Step 4: Build the gnomad state dict ----
     from tools.gnomad_graphql import _default_dataset, GNOMAD_DATASETS
 
@@ -464,6 +520,17 @@ def gnomad_agent_node(state: VariantState) -> dict[str, Any]:
         "insilico_consensus": insilico_criteria["consensus"],
         # Conservation
         "conservation": conservation,
+        # Gene constraint
+        "gene_constraint": constraint,
+        # Protein domains
+        "uniprot": {
+            "accession": uniprot.get("accession", ""),
+            "protein_length": uniprot.get("protein_length", 0),
+            "domains": uniprot.get("domains", []),
+            "repeats": uniprot.get("repeats", []),
+            "variant_in_domain": domain_hit,
+            "variant_in_repeat": in_repeat,
+        },
         # Pre-computed ACMG criteria
         "acmg_criteria": {
             **freq_criteria,
@@ -471,6 +538,12 @@ def gnomad_agent_node(state: VariantState) -> dict[str, Any]:
                if k.startswith(("PP3", "BP4"))},
             "insilico_damaging_count": insilico_criteria["damaging_count"],
             "insilico_benign_count": insilico_criteria["benign_count"],
+            "PM1_met": pm1_result["met"],
+            "PM1_strength": pm1_result.get("strength", ""),
+            "PM1_detail": pm1_result.get("justification", ""),
+            "PM4_met": pm4_bp3_result["pm4_met"],
+            "BP3_met": pm4_bp3_result["bp3_met"],
+            "PM4_BP3_detail": pm4_bp3_result.get("justification", ""),
         },
     }
 

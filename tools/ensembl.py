@@ -338,6 +338,8 @@ def resolve_transcripts(
             "codons": vr.get("codons", ""),
             "biotype": vr.get("biotype", ""),
             "strand": vr.get("strand"),
+            "protein_start": vr.get("protein_start"),
+            "protein_end": vr.get("protein_end"),
         })
 
     # Step 4: Mark MANE Select (canonical = MANE Select for GRCh38)

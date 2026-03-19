@@ -291,6 +291,45 @@ def _build_evidence_prompt(state: VariantState) -> str:
             "Not available — BA1, BS1, PM2, PP3, BP4 cannot be evaluated."
         )
 
+    # Gene constraint + domain annotations
+    if gnomad and isinstance(gnomad, dict):
+        constraint = gnomad.get("gene_constraint")
+        uniprot_data = gnomad.get("uniprot", {})
+        acmg_crit = gnomad.get("acmg_criteria", {})
+
+        gc_lines = ["## Gene Constraint & Protein Domains"]
+        if constraint:
+            gc_lines.append(f"- Missense Z-score: {constraint.get('mis_z', 'N/A')}")
+            gc_lines.append(f"- Missense o/e: {constraint.get('oe_mis', 'N/A')}")
+            gc_lines.append(f"- Missense interpretation: {constraint.get('missense_interpretation', 'N/A')}")
+            gc_lines.append(f"- pLI: {constraint.get('pli', 'N/A')}")
+            gc_lines.append(f"- LOEUF: {constraint.get('loeuf', 'N/A')}")
+            gc_lines.append(f"- LOF interpretation: {constraint.get('lof_interpretation', 'N/A')}")
+        else:
+            gc_lines.append("- Gene constraint data not available")
+
+        if uniprot_data.get("domains"):
+            gc_lines.append(f"- UniProt ({uniprot_data.get('accession', '')}): "
+                            f"{len(uniprot_data['domains'])} functional domains, "
+                            f"protein length {uniprot_data.get('protein_length', '?')} aa")
+            for d in uniprot_data["domains"]:
+                gc_lines.append(f"  - {d['type']}: {d['description']} (aa {d['start']}-{d['end']})")
+            if uniprot_data.get("variant_in_domain"):
+                d = uniprot_data["variant_in_domain"]
+                gc_lines.append(f"- **Variant in domain:** {d['type']} '{d['description']}' (aa {d['start']}-{d['end']})")
+            else:
+                gc_lines.append("- Variant NOT in a known functional domain")
+        if uniprot_data.get("variant_in_repeat"):
+            gc_lines.append("- Variant in repeat region")
+
+        gc_lines.append(f"- PM1 (functional domain): {'MET' if acmg_crit.get('PM1_met') else 'not met'} "
+                        f"({acmg_crit.get('PM1_strength', '')}) — {acmg_crit.get('PM1_detail', '')}")
+        gc_lines.append(f"- PM4 (protein length change): {'MET' if acmg_crit.get('PM4_met') else 'not met'} "
+                        f"— {acmg_crit.get('PM4_BP3_detail', '')}")
+        gc_lines.append(f"- BP3 (in-frame in repeat): {'MET' if acmg_crit.get('BP3_met') else 'not met'}")
+
+        parts.append("\n".join(gc_lines))
+
     # Literature evidence (LitVar)
     pubmed = state.get("pubmed")
     if pubmed and isinstance(pubmed, dict) and pubmed.get("available"):
@@ -385,6 +424,12 @@ def _build_evidence_prompt(state: VariantState) -> str:
         "- BP6: Reputable source reports variant as benign "
         "(upgrade to Strong for expert panel 3+ stars, Moderate for 2 stars)\n"
         "- PM5: Novel missense at same position as known pathogenic missense\n\n"
+        "### From gene constraint + protein domains:\n"
+        "- PM1: Missense variant in a functional domain (UniProt) in a missense-constrained gene\n"
+        "  Domain + constraint Z>2.0 = Moderate; domain only = Supporting\n"
+        "- PM4: In-frame deletion/insertion in non-repeat region causing protein length change (Moderate)\n"
+        "- BP3: In-frame deletion/insertion in a repetitive region (Supporting Benign)\n"
+        "  Use pre-computed PM1_met, PM4_met, BP3_met flags.\n\n"
         "### From gnomAD allele frequency (using controls cohort):\n"
         "- BA1: Allele frequency >5% in any gnomAD population (Stand-alone Benign)\n"
         "- BS1: Allele frequency >1%, greater than expected for rare disease (Strong Benign)\n"

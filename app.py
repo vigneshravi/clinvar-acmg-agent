@@ -457,6 +457,52 @@ if "final_state" in st.session_state:
                 cons_parts = [f"**{k}:** {v:.3f}" if isinstance(v, float) else f"**{k}:** {v}" for k, v in conservation.items()]
                 st.markdown(" &nbsp;|&nbsp; ".join(cons_parts))
 
+    # --- Gene Constraint & Protein Domains ---
+    if gnomad:
+        constraint = gnomad.get("gene_constraint")
+        uniprot_data = gnomad.get("uniprot", {})
+        if constraint or uniprot_data.get("domains"):
+            with st.expander("\U0001f9ec Gene Constraint & Protein Domains", expanded=True):
+                # Constraint metrics
+                if constraint:
+                    uniprot_acc = uniprot_data.get("accession", "")
+                    uniprot_link = f"[{uniprot_acc}](https://www.uniprot.org/uniprotkb/{uniprot_acc})" if uniprot_acc else ""
+                    st.markdown(
+                        f"**Missense Z:** {constraint.get('mis_z', 0):.2f} "
+                        f"({constraint.get('missense_interpretation', '')}) &nbsp;|&nbsp; "
+                        f"**o/e missense:** {constraint.get('oe_mis', 0):.3f} &nbsp;|&nbsp; "
+                        f"**pLI:** {constraint.get('pli', 0):.4f} &nbsp;|&nbsp; "
+                        f"**LOEUF:** {constraint.get('loeuf', 0):.3f} "
+                        f"({constraint.get('lof_interpretation', '')}) &nbsp;|&nbsp; "
+                        f"**UniProt:** {uniprot_link}"
+                    )
+
+                # Domains
+                domains = uniprot_data.get("domains", [])
+                if domains:
+                    st.markdown(f"**Functional domains** (protein length: {uniprot_data.get('protein_length', '?')} aa):")
+                    domain_rows = []
+                    for d in domains:
+                        is_hit = (uniprot_data.get("variant_in_domain") or {}).get("start") == d["start"]
+                        domain_rows.append({
+                            "Type": d["type"],
+                            "Name": d["description"],
+                            "Position": f"aa {d['start']}-{d['end']}",
+                            "Variant": "\U0001f534 IN DOMAIN" if is_hit else "",
+                        })
+                    st.dataframe(domain_rows, use_container_width=True, hide_index=True)
+
+                # PM1 / PM4 / BP3 flags
+                pm1_met = acmg_crit.get("PM1_met", False)
+                pm4_met = acmg_crit.get("PM4_met", False)
+                bp3_met = acmg_crit.get("BP3_met", False)
+                st.markdown(
+                    f"{'\u2705' if pm1_met else '\u274C'} **PM1** (functional domain) "
+                    f"{'(' + acmg_crit.get('PM1_strength', '') + ')' if pm1_met else ''} &nbsp;&nbsp; "
+                    f"{'\u2705' if pm4_met else '\u274C'} **PM4** (protein length change) &nbsp;&nbsp; "
+                    f"{'\u2705' if bp3_met else '\u274C'} **BP3** (in-frame in repeat)"
+                )
+
     # --- Literature Evidence (LitVar) ---
     pubmed_data = fs.get("pubmed")
     if pubmed_data and isinstance(pubmed_data, dict) and pubmed_data.get("available"):
