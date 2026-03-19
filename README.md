@@ -126,18 +126,18 @@ START → input_parser → supervisor ─┬─→ clinvar_agent → gnomad_agen
 
 ## Data Sources & Evidence Flow
 
-| Source | API | Data Retrieved | ACMG Criteria |
-|--------|-----|---------------|---------------|
-| **Ensembl VEP** | REST `/vep/homo_sapiens/hgvs/` | Transcript consequences, exon position, amino acid change, impact, protein position | PVS1 (exon assessment) |
-| **Ensembl Xrefs** | REST `/xrefs/id/`, `/xrefs/symbol/` | NM_ ↔ ENST transcript mapping | Transcript resolution |
-| **NCBI ClinVar** | Entrez esearch + esummary | Clinical significance, star rating, submitters, rsID, condition | PS1, PP5, BP6 |
-| **NCBI Gene** | Entrez esearch + esummary | Gene aliases, full name, pathogenic submission counts per NM_ | Transcript ranking |
-| **gnomAD v3.1.2 / v2.1.1** | GraphQL API | Allele frequencies (3 cohorts: overall, non-cancer, controls), per-population breakdown, homozygotes | BA1, BS1, PM2 |
-| **MyVariant.info** | REST API | dbNSFP scores (REVEL, CADD, MetaRNN, BayesDel, AlphaMissense, SIFT, PolyPhen2), conservation (phyloP, phastCons, GERP++) | PP3, BP4 |
-| **gnomAD Gene Constraint** | GraphQL API | Missense Z-score, o/e ratio, pLI, LOEUF | PM1 |
-| **UniProt** | REST API | Functional domains (Domain, Zinc finger, DNA binding, Motif), repeat regions, protein length | PM1, PM4, BP3 |
-| **NCBI LitVar** | REST API | Publication count, disease associations, related entities, PubMed metadata enrichment | PS3, PS4 |
-| **Claude claude-sonnet-4-5** | LangChain / Anthropic API | ACMG criteria synthesis, combining rules, clinical reasoning | Final classification |
+| Source | API | Data Retrieved | ACMG Criteria | Fallback if Unavailable |
+|--------|-----|---------------|---------------|------------------------|
+| **Ensembl VEP** | REST `/vep/homo_sapiens/hgvs/` | Transcript consequences, exon position, amino acid change, impact, protein position | PVS1 (exon assessment) | Tries up to 5 NM_ transcripts from ClinVar counts + Ensembl canonical. If all VEP calls fail, proceeds without transcript annotation — PVS1 cannot be assessed, classification relies on remaining criteria. Warning shown in UI. |
+| **Ensembl Xrefs** | REST `/xrefs/id/`, `/xrefs/symbol/` | NM_ ↔ ENST transcript mapping | Transcript resolution | If xrefs API fails for a transcript, NM_ field left empty. Transcript shown as ENST-only in dropdown. ClinVar pathogenic counts used as primary NM_ source instead. |
+| **NCBI ClinVar** | Entrez esearch + esummary | Clinical significance, star rating, submitters, rsID, condition | PS1, PP5, BP6 | Tries 4-8 ranked queries with HGVS validation. If primary query returns wrong variant (position/type mismatch), rejected and next query tried. If all queries fail: `clinvar_error` set, PS1/PP5/BP6 marked "not evaluable" in classifier prompt, classification proceeds without ClinVar evidence. |
+| **NCBI Gene** | Entrez esearch + esummary | Gene aliases, full name, pathogenic submission counts per NM_ | Transcript ranking | If Gene API fails: aliases/full_name left empty (cosmetic only). If pathogenic counts fail: no "Most Reported" flag on transcripts — ranking falls back to MANE/Canonical only. |
+| **gnomAD v3.1.2 / v2.1.1** | GraphQL API | Allele frequencies (3 cohorts: overall, non-cancer, controls), per-population breakdown, homozygotes | BA1, BS1, PM2 | Tries: coordinate-based query → rsID query → variant_search (for multi-allelic rsIDs). If variant not found: PM2 set to MET (absent = rare). If API errors: warning added, frequency criteria skipped entirely, classifier told "gnomAD not available." Cohort fallback: controls → non-cancer → overall. |
+| **MyVariant.info** | REST API | dbNSFP scores (REVEL, CADD, MetaRNN, BayesDel, AlphaMissense, SIFT, PolyPhen2), conservation (phyloP, phastCons, GERP++) | PP3, BP4 | If liftover to hg19 fails: tries rsID-based query. If MyVariant returns no data (common for indels): PP3/BP4 marked "not evaluable — no in silico scores for this variant type." Consensus shows "Uncertain." |
+| **gnomAD Gene Constraint** | GraphQL API | Missense Z-score, o/e ratio, pLI, LOEUF | PM1 | If constraint API fails: PM1 can still be assessed from domain overlap alone (downgraded to Supporting). If both constraint and UniProt fail: PM1 marked "not evaluable." |
+| **UniProt** | REST API | Functional domains (Domain, Zinc finger, DNA binding, Motif), repeat regions, protein length | PM1, PM4, BP3 | If UniProt API fails: domain list empty, PM1 limited to constraint-only assessment (not met without domain). PM4/BP3 default to "not evaluable — no repeat region data." |
+| **NCBI LitVar** | REST API | Publication count, disease associations, related entities, PubMed metadata enrichment | PS3, PS4 | If no rsID available (ClinVar didn't return one): LitVar skipped entirely, PS3/PS4 marked "not evaluable — no rsID." If LitVar returns no data: same. If PubMed enrichment fails: publication count still available from LitVar entity, but pub_type classification unavailable. |
+| **Claude claude-sonnet-4-5** | LangChain / Anthropic API | ACMG criteria synthesis, combining rules, clinical reasoning | Final classification | If LLM call fails (auth error, timeout, rate limit): retried once with explicit JSON instruction. If retry fails: defaults to VUS with reasoning "ACMG classification failed: {error}. Defaulting to VUS." If JSON parse fails: retried with "respond only with valid JSON" prompt. |
 
 ---
 
@@ -147,27 +147,96 @@ START → input_parser → supervisor ─┬─→ clinvar_agent → gnomad_agen
 
 #### Pathogenic Criteria
 
-| Criterion | Strength | Source | Logic | Assumptions |
-|-----------|----------|--------|-------|-------------|
-| **PVS1** | Very Strong / Strong / Moderate | VEP | Null variant (frameshift, stop_gained, splice_donor/acceptor, start_lost) in a gene where LOF is a known disease mechanism. **Caveats:** Last exon → Moderate (may escape NMD); Penultimate exon → Strong; Single-exon gene → Moderate; Not null → does not apply. | Assumes `is_canonical` from Ensembl equals the clinically relevant transcript. Uses VEP `exon` field (e.g., "19/23") to determine exon position. |
-| **PS1** | Strong | ClinVar | Same amino acid change classified as pathogenic in ClinVar with ≥2-star review. | Evaluated by Claude based on ClinVar classification and review status. |
-| **PS3** | Strong | LitVar | Well-established functional studies. Assessed from LitVar publication types — looks for "Research Support", "Comparative Study", "Evaluation Study" in PubMed pub_types. | Publication type classification is heuristic. LitVar may not capture all functional studies. Count of "functional studies" is approximate. |
-| **PS4** | Strong | LitVar | Prevalence significantly increased in affected vs controls. Assessed from case reports and disease association counts in LitVar. | Relies on LitVar's automated literature mining. Does not perform independent statistical analysis of case prevalence. |
-| **PM1** | Moderate / Supporting | gnomAD Constraint + UniProt | Missense variant in a well-established functional domain (UniProt Domain, Zinc finger, DNA binding, Motif) in a missense-constrained gene (gnomAD mis_z > 2.0). Domain + constraint → Moderate; domain only → Supporting. | Only applies to missense variants. UniProt "Region" annotations are excluded (too noisy). Motifs are included as functional. |
-| **PM2** | Supporting | gnomAD Controls | Global AF < 0.01% in controls cohort. Uses controls global AF only — not per-population max. | Downgraded to Supporting per ClinGen SVI 2020 recommendation (was originally Moderate). Threshold of 0.0001 may be too strict for some disorders. |
-| **PM4** | Moderate | VEP + UniProt | In-frame deletion/insertion in a non-repeat region causing protein length change. | Checks VEP `consequence_terms` for `inframe_deletion` / `inframe_insertion`. Repeat region check uses UniProt "Repeat" features only. |
-| **PP3** | Supporting | dbNSFP + CADD | Multiple computational tools predict damaging effect. Requires ≥3 tools predicting damaging with majority consensus. Thresholds: REVEL > 0.75, CADD phred > 25, AlphaMissense > 0.564, BayesDel > 0.0692, MetaRNN = "D", SIFT < 0.05, PolyPhen2 > 0.85. | Uses ClinGen SVI-recommended REVEL thresholds. Consensus requires at least 3 tools agreeing. Only available for SNVs with dbNSFP annotations (not indels). |
-| **PP5** | Supporting / Moderate / Strong | ClinVar | Reputable source classifies as pathogenic. Strength scaled by ClinVar star rating: 3+ stars (expert panel) → Strong; 2 stars → Moderate; 1 star → Supporting. | Per ClinGen recommendation for evidence strength scaling based on review status. |
+**PVS1 — Null variant (Very Strong / Strong / Moderate)**
+- **Source:** VEP consequence + exon position
+- **Logic:** Null variant (frameshift, stop_gained, splice_donor/acceptor, start_lost) in gene where LOF is a known disease mechanism
+- **Caveats (ClinGen PVS1 decision tree):**
+  - Last exon → downgrade to Moderate (may escape NMD, produce stable truncated protein)
+  - Penultimate exon (last 50bp) → downgrade to Strong
+  - Single-exon gene → downgrade to Moderate (NMD not applicable)
+  - Not a null variant (missense, in-frame, synonymous) → PVS1 does NOT apply
+- **Assumptions:** Uses VEP `exon` field (e.g., "19/23"). Assumes Ensembl canonical is the clinically relevant transcript.
+- **Fallback:** If VEP fails to annotate the variant (no transcript consequences returned), PVS1 cannot be assessed. Exon position unknown → PVS1 marked "not evaluable — no VEP annotation." Classifier informed via prompt; classification relies on remaining criteria.
+
+**PS1 — Same amino acid change as established pathogenic (Strong)**
+- **Source:** ClinVar
+- **Logic:** Same amino acid change already classified as pathogenic in ClinVar with ≥2-star review
+- **Assumptions:** Evaluated by Claude from ClinVar data. Requires ClinVar record to exist.
+- **Fallback:** If ClinVar record not found → PS1 not evaluable. If ClinVar found but no pathogenic classification → PS1 not met.
+
+**PS3 — Well-established functional studies (Strong)**
+- **Source:** LitVar → PubMed MEDLINE enrichment
+- **Logic:** Publication type classification from PubMed's `PT` field — looks for "Research Support", "Comparative Study", "Evaluation Study"
+- **Assumptions:** Heuristic classification. LitVar may not capture all functional studies. Only top 15 PMIDs enriched.
+- **Fallback:** If no rsID available (ClinVar didn't return one) → LitVar skipped, PS3 "not evaluable — no rsID for literature search." If LitVar returns no data → PS3 "not evaluable — no literature found." If PubMed enrichment fails → publication count available but type classification unavailable, PS3 assessment limited to count only.
+
+**PS4 — Prevalence significantly increased in affected (Strong)**
+- **Source:** LitVar disease associations + case report count
+- **Logic:** Multiple case reports and disease association publications across populations
+- **Assumptions:** Relies on LitVar's automated literature mining. Does not perform independent statistical analysis.
+- **Fallback:** Same as PS3 — depends on LitVar/rsID availability. If no literature → PS4 "not evaluable." Case-control Fisher's test in the UI provides independent statistical PS4 support if user provides cohort data.
+
+**PM1 — Functional domain / missense hotspot (Moderate / Supporting)**
+- **Source:** gnomAD gene constraint + UniProt domains
+- **Logic:** Missense variant in UniProt functional domain (Domain, Zinc finger, DNA binding, Motif) AND gene is missense-constrained (Z > 2.0). Domain + constraint → Moderate; domain only → Supporting.
+- **Assumptions:** Only applies to missense variants. UniProt "Region" annotations excluded (too noisy). Protein position from VEP must be available.
+- **Fallback:** If gnomAD constraint API fails → PM1 can still be assessed from domain overlap alone (Supporting). If UniProt API fails → no domain data, PM1 "not evaluable — no domain annotations." If VEP didn't return `protein_start` → domain overlap check impossible, PM1 not evaluable. If variant is not missense → PM1 explicitly "does not apply."
+
+**PM2 — Absent from controls (Supporting)**
+- **Source:** gnomAD controls global AF
+- **Logic:** Global AF < 0.01% (0.0001) in controls cohort
+- **Assumptions:** Downgraded to Supporting per ClinGen SVI 2020. Uses global AF only, not per-population max.
+- **Fallback:** If variant not found in any gnomAD cohort → PM2 = MET (absent = rare, supports pathogenicity). If gnomAD API entirely fails → PM2 "not evaluable — gnomAD query failed." Cohort selection fallback: controls → non-cancer → overall.
+
+**PM4 — Protein length change (Moderate)**
+- **Source:** VEP consequence + UniProt repeats
+- **Logic:** In-frame deletion/insertion in a non-repeat region
+- **Assumptions:** Checks `inframe_deletion` / `inframe_insertion` in VEP consequence_terms. Repeat check uses UniProt "Repeat" features only.
+- **Fallback:** If VEP consequence not available → PM4 "not evaluable." If UniProt fails → cannot check repeat status, assumes non-repeat (PM4 may apply). If variant is not in-frame → PM4 explicitly "does not apply."
+
+**PP3 — Computational evidence supports damaging (Supporting)**
+- **Source:** dbNSFP (via MyVariant.info) + CADD
+- **Logic:** ≥3 tools predict damaging with majority consensus. Thresholds: REVEL > 0.75, CADD phred > 25, AlphaMissense > 0.564, BayesDel > 0.0692, MetaRNN = "D", SIFT < 0.05, PolyPhen2 > 0.85.
+- **Assumptions:** ClinGen SVI-recommended thresholds. Consensus requires at least 3 agreeing tools.
+- **Fallback:** If MyVariant.info returns no data (common for indels/insertions/deletions) → PP3 "not evaluable — no in silico scores for this variant type." Consensus shows "Uncertain." If hg19 liftover fails → tries rsID-based MyVariant query. If individual predictors missing → score skipped, consensus computed from available tools only (may have <3 tools → not evaluable).
+
+**PP5 — Reputable source classifies pathogenic (Supporting / Moderate / Strong)**
+- **Source:** ClinVar star rating
+- **Logic:** 3+ stars (expert panel) → Strong; 2 stars → Moderate; 1 star → Supporting
+- **Assumptions:** Per ClinGen recommendation for evidence strength scaling.
+- **Fallback:** If ClinVar not found → PP5 not evaluable. If ClinVar found with 0 stars (no assertion criteria) → PP5 not triggered.
 
 #### Benign Criteria
 
-| Criterion | Strength | Source | Logic | Assumptions |
-|-----------|----------|--------|-------|-------------|
-| **BA1** | Stand-alone | gnomAD Controls | Global AF > 5% in controls cohort. Stand-alone sufficient for Benign. | Uses controls global AF only. 5% is the standard ACMG threshold. |
-| **BS1** | Strong | gnomAD Controls | Global AF > 1% in controls cohort, greater than expected for rare disease. | 1% threshold assumes rare disease gene. May need adjustment for common disease genes. |
-| **BP3** | Supporting | VEP + UniProt | In-frame deletion/insertion within a repetitive region without known function. | Only triggers for in-frame variants in UniProt-annotated repeat regions. |
-| **BP4** | Supporting | dbNSFP + CADD | Multiple computational tools predict no impact. Requires ≥3 tools predicting benign. Thresholds: REVEL < 0.15, CADD phred < 15. | Mirror image of PP3 logic. |
-| **BP6** | Supporting / Moderate / Strong | ClinVar | Reputable source classifies as benign. Same star-based strength scaling as PP5. | Assumes ClinVar benign classifications with expert panel review are reliable. |
+**BA1 — Allele frequency > 5% (Stand-alone)**
+- **Source:** gnomAD controls global AF
+- **Logic:** Global AF > 5% → Stand-alone Benign (sufficient alone for Benign classification)
+- **Assumptions:** Uses controls global AF only. 5% is the standard ACMG threshold.
+- **Fallback:** Same cohort fallback as PM2 (controls → non-cancer → overall). If gnomAD entirely unavailable → BA1 not evaluable.
+
+**BS1 — Allele frequency > 1% (Strong)**
+- **Source:** gnomAD controls global AF
+- **Logic:** Global AF > 1%, greater than expected for rare disease
+- **Assumptions:** 1% threshold assumes rare disease gene. Uses global AF, NOT per-population max (avoids founder effect false positives like Finnish CHEK2).
+- **Fallback:** Same as BA1. If gnomAD unavailable → BS1 not evaluable.
+
+**BP3 — In-frame indel in repetitive region (Supporting)**
+- **Source:** VEP consequence + UniProt repeats
+- **Logic:** In-frame deletion/insertion within a UniProt-annotated repeat region
+- **Assumptions:** Only triggers for in-frame variants in repeat regions.
+- **Fallback:** If UniProt fails → no repeat data, BP3 cannot be assessed (defaults to not met). If VEP consequence not available → BP3 not evaluable.
+
+**BP4 — Computational evidence supports no impact (Supporting)**
+- **Source:** dbNSFP + CADD
+- **Logic:** ≥3 tools predict benign. Thresholds: REVEL < 0.15, CADD phred < 15.
+- **Assumptions:** Mirror of PP3 logic.
+- **Fallback:** Same as PP3 — if no in silico data available → BP4 "not evaluable."
+
+**BP6 — Reputable source classifies benign (Supporting / Moderate / Strong)**
+- **Source:** ClinVar star rating
+- **Logic:** Same strength scaling as PP5 but for benign classifications
+- **Assumptions:** ClinVar benign classifications with expert panel review are reliable.
+- **Fallback:** If ClinVar not found → BP6 not evaluable.
 
 ### Frequency Criteria: Cohort Selection Logic
 
@@ -175,8 +244,25 @@ START → input_parser → supervisor ─┬─→ clinvar_agent → gnomad_agen
 Priority for BA1 / BS1 / PM2 evaluation:
 
 1. gnomAD controls/biobanks (GRCh38: v3.1.2, GRCh37: v2.1.1 controls)
-2. gnomAD non-cancer (if controls unavailable)
-3. gnomAD overall (if neither available)
+2. gnomAD non-cancer (if controls unavailable or variant not found)
+3. gnomAD overall (if neither above available)
+4. gnomAD v4 / v2.1.1 primary dataset (if all above fail)
+
+Fallback chain example (CHEK2 c.1100delC on GRCh37):
+  → Try v2.1.1 controls: found, global AF = 0.002368 ✓ → use this
+  → Skip non-cancer (controls available)
+
+Fallback chain example (variant not in controls):
+  → Try controls: variant not found
+  → Try non-cancer: found, global AF = 0.000045 ✓ → use this
+
+Fallback chain example (gnomAD API down):
+  → Try controls: API error
+  → Try non-cancer: API error
+  → Try overall: API error
+  → Result: frequency criteria "not evaluable — gnomAD query failed"
+  → BA1 = not evaluable, BS1 = not evaluable, PM2 = not evaluable
+  → Warning shown in UI
 
 Within each cohort:
 - Use GLOBAL allele frequency only
@@ -184,6 +270,9 @@ Within each cohort:
 
 The UI explicitly states which cohort and AF value was used:
   "evaluated on controls global AF = 0.002368"
+
+Case-control analysis (Fisher's / GLM) also uses the controls cohort
+by default. The UI shows: "Control cohort: gnomAD v2.1.1 (controls)"
 ```
 
 ### ACMG Combining Rules
