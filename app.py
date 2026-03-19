@@ -1,4 +1,4 @@
-"""Streamlit UI for ClinVar ACMG Variant Classifier — LangGraph multi-agent."""
+"""PathoMAN 2.0 — AI-Powered ACMG Variant Classification (Streamlit UI)."""
 
 import json
 import math
@@ -15,18 +15,97 @@ from graph.state import VariantState, make_initial_state
 _cache = CacheManager()
 
 # ---------------------------------------------------------------------------
-# Consistent CSS — no big/small font inconsistency
+# Page config — must be first Streamlit call
 # ---------------------------------------------------------------------------
-st.markdown("""
+st.set_page_config(page_title="PathoMAN 2.0", page_icon="\U0001f7e0", layout="wide")
+
+# ---------------------------------------------------------------------------
+# CSS + Logo
+# ---------------------------------------------------------------------------
+PACMAN_LOGO = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 52 48" width="44" height="40">'
+    '<defs><linearGradient id="pg" x1="0" y1="0" x2="1" y2="1">'
+    '<stop offset="0%" stop-color="#FFB300"/><stop offset="100%" stop-color="#FF8F00"/>'
+    '</linearGradient></defs>'
+    # Pac-man body: circle with wedge mouth cut out (facing right)
+    '<path d="M26 4 A20 20 0 1 1 26 44 A20 20 0 1 1 26 4 Z" fill="url(#pg)"/>'
+    # Mouth wedge (white triangle cut-out opening to the right)
+    '<path d="M26 24 L48 10 L48 38 Z" fill="white"/>'
+    # Eye
+    '<circle cx="30" cy="14" r="3" fill="#333"/>'
+    '<circle cx="31" cy="13" r="1.2" fill="white"/>'
+    # AI badge (purple pill)
+    '<rect x="13" y="2" rx="5" ry="5" width="16" height="10" fill="#7C3AED" opacity="0.85"/>'
+    '<text x="21" y="10" text-anchor="middle" fill="white" font-size="7" '
+    'font-weight="bold" font-family="Arial,sans-serif">AI</text>'
+    # DNA double-helix trail behind
+    '<path d="M2 18 Q6 14 10 18 Q14 22 18 18" stroke="#FF8F00" stroke-width="1.5" fill="none" opacity="0.5"/>'
+    '<path d="M2 30 Q6 34 10 30 Q14 26 18 30" stroke="#FF8F00" stroke-width="1.5" fill="none" opacity="0.5"/>'
+    '<line x1="6" y1="18" x2="6" y2="30" stroke="#FF8F00" stroke-width="0.8" opacity="0.3"/>'
+    '<line x1="10" y1="18" x2="10" y2="30" stroke="#FF8F00" stroke-width="0.8" opacity="0.3"/>'
+    '<line x1="14" y1="18" x2="14" y2="30" stroke="#FF8F00" stroke-width="0.8" opacity="0.3"/>'
+    '</svg>'
+)
+
+# Pac-man character SVG for the animation (smaller, just the face)
+PACMAN_ANIM_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28" width="24" height="24" style="vertical-align:middle;">'
+    '<path d="M14 2 A12 12 0 1 1 14 26 A12 12 0 1 1 14 2 Z" fill="#FFB300"/>'
+    '<path d="M14 14 L27 6 L27 22 Z" fill="white"/>'
+    '<circle cx="16" cy="8" r="2" fill="#333"/>'
+    '<circle cx="16.7" cy="7.3" r="0.8" fill="white"/>'
+    '</svg>'
+)
+
+st.markdown(f"""
 <style>
-    /* Override st.metric to use consistent sizing */
-    [data-testid="stMetricValue"] { font-size: 1rem !important; }
-    [data-testid="stMetricLabel"] { font-size: 0.85rem !important; }
-    [data-testid="stMetricDelta"] { font-size: 0.8rem !important; }
-    /* Consistent markdown sizing */
-    .stMarkdown p { font-size: 0.95rem; }
-    .stMarkdown h4 { font-size: 1.1rem !important; margin-top: 1rem; }
+    .block-container {{ padding-top: 1rem !important; }}
+    /* Hide default Streamlit header bar to prevent clipping */
+    header[data-testid="stHeader"] {{ background: transparent; }}
+    [data-testid="stMetricValue"] {{ font-size: 1rem !important; }}
+    [data-testid="stMetricLabel"] {{ font-size: 0.85rem !important; }}
+    .stMarkdown p {{ font-size: 0.95rem; }}
+    .stMarkdown h4 {{ font-size: 1.1rem !important; margin-top: 1rem; }}
+    /* ACMG criteria pills */
+    .acmg-pill {{ display:inline-block; padding:4px 12px; border-radius:16px; margin:2px;
+                 font-weight:600; font-size:0.8rem; cursor:default; position:relative; }}
+    .acmg-pill.path-met {{ background:#ff4b4b; color:white; }}
+    .acmg-pill.ben-met {{ background:#4caf50; color:white; }}
+    .acmg-pill.not-met {{ background:#e8e8e8; color:#888; }}
+    .acmg-pill[title]:hover::after {{
+        content: attr(title); position:absolute; bottom:130%; left:50%;
+        transform:translateX(-50%); background:#333; color:white;
+        padding:6px 10px; border-radius:6px; font-size:0.7rem; font-weight:400;
+        white-space:pre-wrap; max-width:300px; z-index:100; box-shadow:0 2px 8px rgba(0,0,0,0.2);
+    }}
+    /* Classification hero */
+    .classification-hero {{ padding:16px 24px; border-radius:10px; text-align:center;
+                           font-size:1.4rem; font-weight:700; margin:8px 0; }}
+    .classification-sub {{ text-align:center; margin-top:4px; font-size:0.95rem; }}
+    /* Header */
+    .pathoman-header {{ display:flex; align-items:center; gap:14px; margin-bottom:8px; margin-top:0.5rem; }}
+    .pathoman-header h1 {{ margin:0; font-size:1.8rem; line-height:1.2; }}
+    .pathoman-header .subtitle {{ color:#666; font-size:0.9rem; margin:0; }}
+    .pathoman-header svg {{ flex-shrink:0; }}
+    /* Pac-man animation */
+    .pacman-track {{ display:flex; align-items:center; gap:0; padding:12px 0; overflow-x:auto; }}
+    .pacman-dot {{ width:12px; height:12px; border-radius:50%; margin:0 8px;
+                  transition: all 0.3s ease; }}
+    .pacman-dot.pending {{ background:#FFD54F; }}
+    .pacman-dot.eaten {{ background:#e0e0e0; opacity:0.4; transform:scale(0.5); }}
+    .pacman-dot.current {{ background:#FF8F00; animation: pulse 0.6s infinite alternate; }}
+    .pacman-label {{ font-size:0.7rem; color:#666; text-align:center; min-width:60px; }}
+    .pacman-step {{ display:flex; flex-direction:column; align-items:center; }}
+    @keyframes pulse {{ from {{ transform:scale(1); }} to {{ transform:scale(1.3); }} }}
+    .pacman-char {{ display:inline-block; margin:0 4px; vertical-align:middle; }}
 </style>
+<div class="pathoman-header">
+    {PACMAN_LOGO}
+    <div>
+        <div style="font-size:1.8rem; font-weight:700; line-height:1.2; color:#1a1a1a;">PathoMAN 2.0</div>
+        <div style="color:#666; font-size:0.9rem;">AI-Powered ACMG Variant Classification &middot; <em>Not for clinical use</em></div>
+    </div>
+</div>
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
@@ -80,12 +159,32 @@ def _transcript_label(tx: dict) -> str:
     if pos_detail: parts.append(pos_detail)
     return " | ".join(parts)
 
+def _af(val):
+    """Format allele frequency."""
+    return f"{val:.6f}" if val is not None else "\u2014"
+
+def _ac_an(block, key):
+    """Format AC/AN for exome or genome."""
+    sub = (block or {}).get(key) or {}
+    if sub.get("an"):
+        return f"{sub.get('ac',0)}/{sub.get('an',0)}"
+    return "\u2014"
+
+# Pipeline node labels + order for pac-man animation
 NODE_LABELS = {
-    "input_parser": "Parse Input", "supervisor": "Route",
-    "clinvar_agent": "ClinVar", "gnomad_agent": "gnomAD + In Silico",
-    "pubmed_agent": "PubMed", "alphafold_agent": "AlphaFold",
-    "tcga_agent": "TCGA", "acmg_classifier": "ACMG Classifier",
+    "input_parser": "Parse", "supervisor": "Route",
+    "clinvar_agent": "ClinVar", "gnomad_agent": "gnomAD",
+    "pubmed_agent": "Literature", "alphafold_agent": "Protein",
+    "tcga_agent": "Clinical",
+    "pathway_agent": "Pathways",
+    "acmg_classifier": "ACMG",
 }
+
+PIPELINE_STEPS = [
+    "input_parser", "supervisor", "clinvar_agent", "gnomad_agent",
+    "pubmed_agent", "alphafold_agent", "tcga_agent", "pathway_agent",
+    "acmg_classifier",
+]
 
 POP_ORDER = ["afr", "amr", "asj", "eas", "fin", "mid", "nfe", "sas", "remaining", "ami"]
 POP_NAMES = {
@@ -95,13 +194,40 @@ POP_NAMES = {
     "remaining": "Remaining", "ami": "Amish",
 }
 
-# ---------------------------------------------------------------------------
-# Page config
-# ---------------------------------------------------------------------------
-st.set_page_config(page_title="ClinVar ACMG Variant Classifier", page_icon="\U0001f9ec", layout="wide")
-st.title("\U0001f9ec ClinVar ACMG Variant Classifier")
-st.markdown("*AI-assisted variant classification using ACMG/AMP 2015 guidelines. **Not for clinical use.***")
-st.divider()
+
+def _pacman_html(completed_nodes: list[str], current_node: str = "") -> str:
+    """Generate pac-man pipeline animation HTML."""
+    steps_html = []
+    for step in PIPELINE_STEPS:
+        label = NODE_LABELS.get(step, step)
+        if step in completed_nodes:
+            dot_cls = "eaten"
+        elif step == current_node:
+            dot_cls = "current"
+        else:
+            dot_cls = "pending"
+        steps_html.append(
+            f'<div class="pacman-step">'
+            f'<div class="pacman-dot {dot_cls}"></div>'
+            f'<div class="pacman-label">{label}</div>'
+            f'</div>'
+        )
+
+    # Place pac-man character at the position of the current/last completed node
+    pacman_pos = 0
+    if current_node and current_node in PIPELINE_STEPS:
+        pacman_pos = PIPELINE_STEPS.index(current_node)
+    elif completed_nodes:
+        last = completed_nodes[-1]
+        if last in PIPELINE_STEPS:
+            pacman_pos = PIPELINE_STEPS.index(last) + 1
+
+    # Insert pac-man character (SVG face, not emoji)
+    pacman_char = f'<div class="pacman-char">{PACMAN_ANIM_SVG}</div>'
+    steps_html.insert(min(pacman_pos, len(steps_html)), pacman_char)
+
+    return f'<div class="pacman-track">{"".join(steps_html)}</div>'
+
 
 # ---------------------------------------------------------------------------
 # Input
@@ -132,7 +258,12 @@ genome_build = "GRCh37" if "37" in genome_build_sel else "GRCh38"
 # ---------------------------------------------------------------------------
 # Look Up Transcripts
 # ---------------------------------------------------------------------------
-lookup_btn = st.button("Look Up Transcripts", disabled=not raw_input_str, type="secondary")
+c_lookup, c_classify = st.columns(2)
+with c_lookup:
+    lookup_btn = st.button("Look Up Transcripts", disabled=not raw_input_str, type="secondary")
+with c_classify:
+    classify_btn = st.button("Classify Variant", type="primary", disabled=not raw_input_str)
+
 if lookup_btn and raw_input_str:
     from agents.input_parser import input_parser_node
     init = make_initial_state(raw_input_str)
@@ -185,7 +316,6 @@ if "parser_output" in st.session_state:
         strand_val = chosen.get("strand")
         strand_str = "+" if strand_val == 1 else "\u2212" if strand_val == -1 else ""
 
-        # Unified annotation bar — consistent markdown, no st.metric
         if po_chrom and po_pos:
             st.markdown(
                 f"**Chr:** chr{po_chrom} &nbsp;|&nbsp; "
@@ -199,7 +329,6 @@ if "parser_output" in st.session_state:
                 f"**AA:** {chosen.get('amino_acids', '') or 'N/A'}"
             )
 
-            # PVS1 caveat warning for last/penultimate exon truncating variants
             from agents.acmg_classifier import _assess_pvs1_applicability
             pvs1_info = _assess_pvs1_applicability(chosen)
             if pvs1_info["is_null_variant"]:
@@ -224,15 +353,39 @@ if "parser_output" in st.session_state:
         st.warning("No transcripts found. Will proceed with raw input.")
 
 # ---------------------------------------------------------------------------
-# Classify Variant
+# Classify Variant — with Pac-Man animation
 # ---------------------------------------------------------------------------
-classify_btn = st.button("Classify Variant", type="primary", disabled=not raw_input_str)
 if classify_btn and raw_input_str:
     initial_state = make_initial_state(raw_input_str)
     initial_state["genome_build"] = genome_build
-    if "chosen_transcript" in st.session_state and "parser_output" in st.session_state:
-        ct = st.session_state["chosen_transcript"]
-        po = st.session_state["parser_output"]
+
+    # If transcripts were not looked up yet, resolve them now automatically
+    if "parser_output" not in st.session_state:
+        from agents.input_parser import input_parser_node
+        init_parse = make_initial_state(raw_input_str)
+        init_parse["genome_build"] = genome_build
+        with st.spinner("Resolving transcripts via Ensembl VEP..."):
+            parser_output = input_parser_node(init_parse)
+        st.session_state["parser_output"] = parser_output
+        st.session_state["raw_input_str"] = raw_input_str
+        st.session_state["genome_build"] = genome_build
+        # Auto-select the top transcript (most reported / MANE Select)
+        transcripts = parser_output.get("all_transcripts") or []
+        if transcripts:
+            st.session_state["chosen_transcript"] = transcripts[0]
+
+    # Apply chosen transcript (or top/default) to initial state
+    po = st.session_state.get("parser_output", {})
+    ct = st.session_state.get("chosen_transcript")
+
+    # If no transcript was explicitly chosen, use the first one from parser output
+    if not ct:
+        transcripts = po.get("all_transcripts") or []
+        if transcripts:
+            ct = transcripts[0]
+            st.session_state["chosen_transcript"] = ct
+
+    if ct and po:
         if ct.get("hgvsc"): initial_state["hgvs_on_transcript"] = ct["hgvsc"]
         tx_id = ct.get("nm_accession") or ct.get("enst_accession")
         if tx_id: initial_state["selected_transcript"] = tx_id
@@ -241,21 +394,37 @@ if classify_btn and raw_input_str:
             if po.get(k): initial_state[k] = po[k]
 
     final_state = dict(initial_state)
-    with st.status("Running classification pipeline...", expanded=True) as status:
-        try:
-            for node_name, node_output in run_graph_stream(initial_state):
-                final_state.update(node_output)
-                st.write(f"\u2705 **{NODE_LABELS.get(node_name, node_name)}** completed")
-                if node_name == "supervisor" and final_state.get("input_parse_error"):
-                    if not final_state.get("gene_symbol"):
-                        status.update(label="Pipeline stopped", state="error")
-                        st.error(f"Parse error: {final_state['input_parse_error']}")
-                        st.stop()
-            status.update(label="Pipeline complete!", state="complete")
-        except Exception as e:
-            status.update(label="Pipeline error", state="error")
-            st.error(f"Error: {e}")
-            st.stop()
+    completed_nodes: list[str] = []
+    anim_placeholder = st.empty()
+    anim_placeholder.markdown(_pacman_html([], PIPELINE_STEPS[0]), unsafe_allow_html=True)
+
+    try:
+        for node_name, node_output in run_graph_stream(initial_state):
+            final_state.update(node_output)
+            completed_nodes.append(node_name)
+            # Determine next node for animation
+            idx = PIPELINE_STEPS.index(node_name) if node_name in PIPELINE_STEPS else -1
+            next_node = PIPELINE_STEPS[idx + 1] if idx + 1 < len(PIPELINE_STEPS) else ""
+            anim_placeholder.markdown(_pacman_html(completed_nodes, next_node), unsafe_allow_html=True)
+
+            if node_name == "supervisor" and final_state.get("input_parse_error"):
+                if not final_state.get("gene_symbol"):
+                    anim_placeholder.empty()
+                    st.error(f"Parse error: {final_state['input_parse_error']}")
+                    st.stop()
+
+        # Final: all done
+        anim_placeholder.markdown(
+            _pacman_html(completed_nodes, "") +
+            '<div style="text-align:center;font-size:0.85rem;color:#4caf50;font-weight:600;">'
+            'Classification complete!</div>',
+            unsafe_allow_html=True,
+        )
+    except Exception as e:
+        anim_placeholder.empty()
+        st.error(f"Pipeline error: {e}")
+        st.stop()
+
     st.session_state["final_state"] = final_state
 
 # ---------------------------------------------------------------------------
@@ -275,18 +444,247 @@ if "final_state" in st.session_state:
     predictors = gnomad.get("insilico_predictors", {})
     conservation = gnomad.get("conservation", {})
     acmg_crit = gnomad.get("acmg_criteria", {})
+    pubmed_data = fs.get("pubmed")
 
     # Summary bar
-    parts = [fs.get("gene_symbol", ""), fs.get("hgvs_on_transcript", ""), fs.get("genome_build", "")]
+    summary_parts = [fs.get("gene_symbol", ""), fs.get("hgvs_on_transcript", ""), fs.get("genome_build", "")]
     for t in all_tx:
         if (t.get("nm_accession") or t.get("enst_accession")) == sel_tx:
-            if t.get("consequence_display"): parts.append(t["consequence_display"])
-            if t.get("position_detail"): parts.append(t["position_detail"])
+            if t.get("consequence_display"): summary_parts.append(t["consequence_display"])
+            if t.get("position_detail"): summary_parts.append(t["position_detail"])
             break
-    st.markdown(f"**{' | '.join(p for p in parts if p)}**")
+    st.markdown(f"**{' | '.join(p for p in summary_parts if p)}**")
 
-    # --- ClinVar ---
-    with st.expander("\U0001f4cb ClinVar Record", expanded=True):
+    # ===================================================================
+    # CLASSIFICATION HERO BANNER (first thing shown)
+    # ===================================================================
+    classification = fs.get("classification", "VUS")
+    colors = {
+        "Pathogenic": ("#ff4b4b", "#fff"), "Likely Pathogenic": ("#ff8c00", "#fff"),
+        "VUS": ("#ffd700", "#333"), "Likely Benign": ("#90ee90", "#333"), "Benign": ("#4caf50", "#fff"),
+    }
+    bg, fg = colors.get(classification, ("#ffd700", "#333"))
+    confidence = fs.get("confidence", "Low")
+    reasoning = fs.get("reasoning", "")
+
+    st.markdown(
+        f'<div class="classification-hero" style="background:{bg};color:{fg};">'
+        f'{classification}</div>'
+        f'<div class="classification-sub">'
+        f'<strong>Confidence:</strong> {confidence} &mdash; {reasoning[:200]}'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ===================================================================
+    # ACMG CRITERIA PILLS
+    # ===================================================================
+    criteria = fs.get("criteria_triggered") or []
+    if criteria:
+        path_criteria = [c for c in criteria if c.get("direction") == "pathogenic"]
+        ben_criteria = [c for c in criteria if c.get("direction") == "benign"]
+        other_criteria = [c for c in criteria if c.get("direction") not in ("pathogenic", "benign")]
+
+        def _pill(c):
+            met = c.get("met", False)
+            direction = c.get("direction", "")
+            code = c.get("code", "")
+            strength = c.get("strength", "")
+            justification = c.get("justification", "").replace('"', '&quot;')
+            if met and direction == "pathogenic":
+                cls = "path-met"
+            elif met and direction == "benign":
+                cls = "ben-met"
+            else:
+                cls = "not-met"
+            title = f"{strength}: {justification}" if justification else strength
+            return f'<span class="acmg-pill {cls}" title="{title}">{code}</span>'
+
+        pills_html = ""
+        # Pathogenic row
+        path_pills = "".join(_pill(c) for c in path_criteria)
+        if path_pills:
+            pills_html += f'<div style="margin:4px 0">{path_pills}</div>'
+        # Benign row
+        ben_pills = "".join(_pill(c) for c in ben_criteria)
+        if ben_pills:
+            pills_html += f'<div style="margin:4px 0">{ben_pills}</div>'
+        # Other
+        other_pills = "".join(_pill(c) for c in other_criteria)
+        if other_pills:
+            pills_html += f'<div style="margin:4px 0">{other_pills}</div>'
+
+        st.markdown(pills_html, unsafe_allow_html=True)
+
+    st.divider()
+
+    # ===================================================================
+    # TABBED EVIDENCE LAYOUT
+    # ===================================================================
+    tab_freq, tab_clinvar, tab_lit, tab_struct, tab_pubdata, tab_pathways, tab_cc = st.tabs(
+        ["Frequencies", "ClinVar", "Literature", "Structure", "Public Datasets", "Pathways", "Case-Control"]
+    )
+
+    # ---- TAB: Frequencies ----
+    with tab_freq:
+        if gnomad:
+            col_gn, col_pred = st.columns([3, 2])
+
+            with col_gn:
+                gn_vid = gnomad.get("gnomad_variant_id", "")
+                rsid_val = gnomad.get("rsid", "")
+                coord_str = gnomad.get("coordinates", "")
+                gn_dataset = gnomad.get("dataset", "gnomad_r4")
+
+                link_parts = []
+                if coord_str: link_parts.append(f"**Coords:** {coord_str}")
+                if gn_vid: link_parts.append(f"**gnomAD:** {_gnomad_link(gn_vid, gn_dataset)}")
+                if rsid_val: link_parts.append(f"**dbSNP:** {_dbsnp_link(rsid_val)}")
+                if link_parts:
+                    st.markdown(" &nbsp;|&nbsp; ".join(link_parts))
+
+                st.markdown("#### gnomAD Cohorts")
+
+                # Use ordered cohorts list
+                cohorts = gnomad.get("cohorts", [])
+                if cohorts:
+                    cohort_rows = []
+                    for coh in cohorts:
+                        row = {
+                            "Cohort": coh.get("label", coh.get("key", "")),
+                            "Status": "Found" if coh.get("available") else "Not Available",
+                            "Global AF": _af(coh.get("global_af")) if coh.get("available") else "\u2014",
+                            "Exome AC/AN": _ac_an(coh, "exome") if coh.get("available") else "\u2014",
+                            "Genome AC/AN": _ac_an(coh, "genome") if coh.get("available") else "\u2014",
+                            "Hom": coh.get("hom", 0) if coh.get("available") else "\u2014",
+                        }
+                        cohort_rows.append(row)
+                    st.dataframe(cohort_rows, use_container_width=True, hide_index=True)
+                elif gnomad.get("variant_in_gnomad"):
+                    # Fallback to legacy 3-cohort display
+                    detail_rows = []
+                    for key, label in [("overall", "Overall"), ("non_cancer", "Non-cancer"), ("controls", "Controls")]:
+                        block = gnomad.get(key, {})
+                        if block.get("available"):
+                            detail_rows.append({
+                                "Cohort": block.get("label", label),
+                                "Global AF": _af(block.get("global_af")),
+                                "Exome AC/AN": _ac_an(block, "exome"),
+                                "Genome AC/AN": _ac_an(block, "genome"),
+                                "Hom": block.get("hom", 0),
+                            })
+                    if detail_rows:
+                        st.dataframe(detail_rows, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Variant **not found** in gnomAD (supports PM2)")
+
+                # ACMG frequency flags with cohort label
+                freq_cohort_label = gnomad.get("freq_cohort_label", acmg_crit.get("freq_cohort", "controls"))
+                freq_af = acmg_crit.get("freq_af_used")
+                freq_af_str = f"{freq_af:.6f}" if freq_af is not None else "N/A"
+                st.markdown(
+                    f"{'\u2705' if acmg_crit.get('BA1_met') else '\u274C'} **BA1** (>5%) &nbsp;&nbsp; "
+                    f"{'\u2705' if acmg_crit.get('BS1_met') else '\u274C'} **BS1** (>1%) &nbsp;&nbsp; "
+                    f"{'\u2705' if acmg_crit.get('PM2_met') else '\u274C'} **PM2** (<0.01%) &nbsp;&nbsp; "
+                    f"*(Using **{freq_cohort_label}** as reference &middot; AF = {freq_af_str})*"
+                )
+
+                # Population table (use first available cohort with populations)
+                ref_cohort = None
+                for coh in cohorts:
+                    if coh.get("available") and coh.get("populations"):
+                        ref_cohort = coh
+                        break
+                if ref_cohort:
+                    pop_rows = []
+                    for pid in POP_ORDER:
+                        pd = ref_cohort["populations"].get(pid, {})
+                        if isinstance(pd, dict) and pd:
+                            pop_rows.append({
+                                "Population": POP_NAMES.get(pid, pid),
+                                "AF": _af(pd.get("af")),
+                                "AC": pd.get("ac", "\u2014"),
+                                "AN": pd.get("an", "\u2014"),
+                            })
+                    if pop_rows:
+                        with st.expander(f"Population breakdown ({ref_cohort.get('label', '')})"):
+                            st.dataframe(pop_rows, use_container_width=True, hide_index=True)
+
+            with col_pred:
+                # In silico predictors
+                if predictors:
+                    st.markdown("#### In Silico Predictors")
+                    pred_rows = []
+                    for name, val in predictors.items():
+                        if isinstance(val, dict):
+                            pred_rows.append({
+                                "Predictor": name.replace("_", " ").upper(),
+                                "Score": val.get("score", val.get("interpretation", "")),
+                                "Prediction": val.get("pred", val.get("interpretation", "")),
+                            })
+                        else:
+                            pred_rows.append({"Predictor": name.upper(), "Score": val, "Prediction": ""})
+                    if pred_rows:
+                        st.dataframe(pred_rows, use_container_width=True, hide_index=True)
+
+                    consensus = gnomad.get("insilico_consensus", "")
+                    color = {"Damaging": "red", "Benign": "green"}.get(consensus, "orange")
+                    st.markdown(
+                        f"**Consensus:** :{color}[{consensus}] &nbsp;&nbsp; "
+                        f"{'\u2705' if acmg_crit.get('PP3_met') else '\u274C'} **PP3** &nbsp;&nbsp; "
+                        f"{'\u2705' if acmg_crit.get('BP4_met') else '\u274C'} **BP4**"
+                    )
+
+                if conservation:
+                    st.markdown("#### Conservation")
+                    cons_parts = [f"**{k}:** {v:.3f}" if isinstance(v, float) else f"**{k}:** {v}" for k, v in conservation.items()]
+                    st.markdown(" &nbsp;|&nbsp; ".join(cons_parts))
+
+                # Gene constraint + domains
+                constraint = gnomad.get("gene_constraint")
+                uniprot_data = gnomad.get("uniprot", {})
+                if constraint:
+                    st.markdown("#### Gene Constraint")
+                    uniprot_acc = uniprot_data.get("accession", "")
+                    uniprot_link = f"[{uniprot_acc}](https://www.uniprot.org/uniprotkb/{uniprot_acc})" if uniprot_acc else ""
+                    st.markdown(
+                        f"**mis_z:** {constraint.get('mis_z', 0):.2f} "
+                        f"({constraint.get('missense_interpretation', '')}) &nbsp;|&nbsp; "
+                        f"**pLI:** {constraint.get('pli', 0):.4f} &nbsp;|&nbsp; "
+                        f"**LOEUF:** {constraint.get('loeuf', 0):.3f} "
+                        f"({constraint.get('lof_interpretation', '')})"
+                    )
+                    if uniprot_link:
+                        st.markdown(f"**UniProt:** {uniprot_link}")
+
+                domains = uniprot_data.get("domains", [])
+                if domains:
+                    st.markdown(f"#### Domains ({uniprot_data.get('protein_length', '?')} aa)")
+                    domain_rows = []
+                    for d in domains:
+                        is_hit = (uniprot_data.get("variant_in_domain") or {}).get("start") == d["start"]
+                        domain_rows.append({
+                            "Name": d["description"],
+                            "Position": f"{d['start']}-{d['end']}",
+                            "Hit": "\U0001f534" if is_hit else "",
+                        })
+                    st.dataframe(domain_rows, use_container_width=True, hide_index=True)
+
+                # PM1 / PM4 / BP3
+                pm1_met = acmg_crit.get("PM1_met", False)
+                pm4_met = acmg_crit.get("PM4_met", False)
+                bp3_met = acmg_crit.get("BP3_met", False)
+                if pm1_met or pm4_met or bp3_met:
+                    st.markdown(
+                        f"{'\u2705' if pm1_met else '\u274C'} **PM1** "
+                        f"{'\u2705' if pm4_met else '\u274C'} **PM4** "
+                        f"{'\u2705' if bp3_met else '\u274C'} **BP3**"
+                    )
+        else:
+            st.info("No gnomAD data available.")
+
+    # ---- TAB: ClinVar ----
+    with tab_clinvar:
         if not clinvar:
             st.warning(fs.get("clinvar_error", "No ClinVar data"))
         else:
@@ -308,275 +706,296 @@ if "final_state" in st.session_state:
             if clinvar.get("conflicting_interpretations"):
                 st.warning("\u26A0\uFE0F Conflicting interpretations among submitters")
 
-    # --- gnomAD + In Silico ---
-    if gnomad:
-        with st.expander("\U0001f4ca Population Frequencies & In Silico Predictors", expanded=True):
-            gn_vid = gnomad.get("gnomad_variant_id", "")
-            rsid_val = gnomad.get("rsid", "")
-            coord_str = gnomad.get("coordinates", "")
-            strand_info = ""
-            for t in all_tx:
-                if (t.get("nm_accession") or t.get("enst_accession")) == sel_tx:
-                    s = t.get("strand")
-                    strand_info = "+" if s == 1 else "\u2212" if s == -1 else ""
-                    break
-
-            link_parts = []
-            if coord_str: link_parts.append(f"**Coords:** {coord_str}")
-            if strand_info: link_parts.append(f"**Strand:** {strand_info}")
-            gn_dataset = gnomad.get("dataset", "gnomad_r4")
-            if gn_vid: link_parts.append(f"**gnomAD:** {_gnomad_link(gn_vid, gn_dataset)}")
-            if rsid_val: link_parts.append(f"**dbSNP:** {_dbsnp_link(rsid_val)}")
-            if link_parts:
-                st.markdown(" &nbsp;|&nbsp; ".join(link_parts))
-
-            st.markdown("#### gnomAD Allele Frequencies")
-
-            # Three cohorts: overall, non-cancer, controls
-            ov_c = gnomad.get("overall", {})
-            nc_c = gnomad.get("non_cancer", {})
-            ct_c = gnomad.get("controls", {})
-            ov_avail = ov_c.get("available", False)
-            nc_avail = nc_c.get("available", False)
-            ct_avail = ct_c.get("available", False)
-
-            if gnomad.get("variant_in_gnomad") or af_data.get("variant_in_gnomad"):
-                # Helper to format AF
-                def _af(val):
-                    return f"{val:.6f}" if val is not None else "\u2014"
-
-                def _ac_an(block, key):
-                    """Format AC/AN for exome or genome."""
-                    sub = (block or {}).get(key) or {}
-                    if sub.get("an"):
-                        return f"{sub.get('ac',0)}/{sub.get('an',0)}"
-                    return "\u2014"
-
-                # Summary line: all 3 cohorts
-                parts = []
-                if ov_avail:
-                    parts.append(f"**Overall AF:** {_af(ov_c.get('global_af'))}")
-                if nc_avail:
-                    parts.append(f"**Non-cancer AF:** {_af(nc_c.get('global_af'))}")
-                if ct_avail:
-                    parts.append(f"**Controls AF:** {_af(ct_c.get('global_af'))}")
-                st.markdown(" &nbsp;|&nbsp; ".join(parts))
-
-                # Exome / Genome / Hom breakdown
-                detail_rows = []
-                for label, block in [("Overall", ov_c), ("Non-cancer", nc_c), ("Controls", ct_c)]:
-                    if not block.get("available"):
-                        continue
-                    ds_label = block.get("dataset_label", label)
-                    detail_rows.append({
-                        "Cohort": ds_label,
-                        "Global AF": _af(block.get("global_af")),
-                        "Exome AC/AN": _ac_an(block, "exome"),
-                        "Genome AC/AN": _ac_an(block, "genome"),
-                        "Hom": block.get("hom", 0),
-                    })
-                if detail_rows:
-                    st.dataframe(detail_rows, use_container_width=True, hide_index=True)
-
-                # Population table: all 3 cohorts side by side
-                # Use the first available cohort for population list
-                ref_pops = (ov_c if ov_avail else nc_c if nc_avail else ct_c).get("populations", {})
-                nc_pops = nc_c.get("populations", {})
-                ct_pops = ct_c.get("populations", {})
-                ov_pops = ov_c.get("populations", {})
-
-                if ref_pops:
-                    pop_rows = []
-                    for pid in POP_ORDER:
-                        # Find population data from any cohort
-                        name = POP_NAMES.get(pid, pid)
-                        ov_pd = ov_pops.get(pid, {}) if isinstance(ov_pops.get(pid), dict) else {}
-                        nc_pd = nc_pops.get(pid, {}) if isinstance(nc_pops.get(pid), dict) else {}
-                        ct_pd = ct_pops.get(pid, {}) if isinstance(ct_pops.get(pid), dict) else {}
-
-                        if not (ov_pd or nc_pd or ct_pd):
-                            continue
-
-                        row = {"Population": name}
-                        # Overall
-                        if ov_avail:
-                            row["AF"] = _af(ov_pd.get("af")) if ov_pd else "\u2014"
-                            row["AC"] = ov_pd.get("ac", "\u2014") if ov_pd else "\u2014"
-                            row["AN"] = ov_pd.get("an", "\u2014") if ov_pd else "\u2014"
-                        # Non-cancer
-                        if nc_avail:
-                            row["NC AF"] = _af(nc_pd.get("af")) if nc_pd else "\u2014"
-                            row["NC AC"] = nc_pd.get("ac", "\u2014") if nc_pd else "\u2014"
-                        # Controls
-                        if ct_avail:
-                            row["Ctrl AF"] = _af(ct_pd.get("af")) if ct_pd else "\u2014"
-                            row["Ctrl AC"] = ct_pd.get("ac", "\u2014") if ct_pd else "\u2014"
-
-                        pop_rows.append(row)
-
-                    if pop_rows:
-                        st.dataframe(pop_rows, use_container_width=True, hide_index=True)
-            else:
-                st.info("Variant **not found** in gnomAD — absent from population controls (supports PM2)")
-
-            # ACMG frequency flags — show which cohort and AF was used
-            freq_cohort = acmg_crit.get("freq_cohort", "controls")
-            freq_af = acmg_crit.get("freq_af_used")
-            freq_af_str = f"{freq_af:.6f}" if freq_af is not None else "N/A"
-            st.markdown(
-                f"{'\u2705' if acmg_crit.get('BA1_met') else '\u274C'} **BA1** (global AF>5%) &nbsp;&nbsp; "
-                f"{'\u2705' if acmg_crit.get('BS1_met') else '\u274C'} **BS1** (global AF>1%) &nbsp;&nbsp; "
-                f"{'\u2705' if acmg_crit.get('PM2_met') else '\u274C'} **PM2** (global AF<0.01%) &nbsp;&nbsp; "
-                f"*(evaluated on **{freq_cohort}** global AF = {freq_af_str})*"
-            )
-
-            # In silico predictors
-            if predictors:
-                st.markdown("#### In Silico Predictors")
-                pred_rows = []
-                for name, val in predictors.items():
-                    if isinstance(val, dict):
-                        pred_rows.append({
-                            "Predictor": name.replace("_", " ").upper(),
-                            "Score": val.get("score", val.get("interpretation", "")),
-                            "Prediction": val.get("pred", val.get("interpretation", "")),
-                        })
-                    else:
-                        pred_rows.append({"Predictor": name.upper(), "Score": val, "Prediction": ""})
-                if pred_rows:
-                    st.dataframe(pred_rows, use_container_width=True, hide_index=True)
-
-                consensus = gnomad.get("insilico_consensus", "")
-                color = {"Damaging": "red", "Benign": "green"}.get(consensus, "orange")
+    # ---- TAB: Literature ----
+    with tab_lit:
+        if pubmed_data and isinstance(pubmed_data, dict) and pubmed_data.get("available"):
+            col_dis, col_pubs = st.columns(2)
+            with col_dis:
+                rsid_lit = pubmed_data.get("rsid", "")
+                litvar_link = f"[LitVar](https://www.ncbi.nlm.nih.gov/research/litvar2/docsum?query={rsid_lit})" if rsid_lit else ""
                 st.markdown(
-                    f"**Consensus:** :{color}[{consensus}] &nbsp;&nbsp; "
-                    f"{'\u2705' if acmg_crit.get('PP3_met') else '\u274C'} **PP3** &nbsp;&nbsp; "
-                    f"{'\u2705' if acmg_crit.get('BP4_met') else '\u274C'} **BP4**"
+                    f"**Publications:** {pubmed_data.get('pmids_count', 0)} &nbsp;|&nbsp; "
+                    f"**Case Reports:** {pubmed_data.get('case_report_count', 0)} &nbsp;|&nbsp; "
+                    f"**Functional Studies:** {pubmed_data.get('functional_study_count', 0)} &nbsp;|&nbsp; "
+                    f"{litvar_link}"
                 )
 
-            if conservation:
-                st.markdown("#### Conservation")
-                cons_parts = [f"**{k}:** {v:.3f}" if isinstance(v, float) else f"**{k}:** {v}" for k, v in conservation.items()]
-                st.markdown(" &nbsp;|&nbsp; ".join(cons_parts))
+                diseases = pubmed_data.get("diseases", [])
+                if diseases:
+                    st.markdown("**Disease Associations:**")
+                    disease_rows = [{"Disease": dname, "Pubs": dcount} for dname, dcount in diseases[:10]]
+                    st.dataframe(disease_rows, use_container_width=True, hide_index=True)
 
-    # --- Gene Constraint & Protein Domains ---
-    if gnomad:
-        constraint = gnomad.get("gene_constraint")
-        uniprot_data = gnomad.get("uniprot", {})
-        if constraint or uniprot_data.get("domains"):
-            with st.expander("\U0001f9ec Gene Constraint & Protein Domains", expanded=True):
-                # Constraint metrics
-                if constraint:
-                    uniprot_acc = uniprot_data.get("accession", "")
-                    uniprot_link = f"[{uniprot_acc}](https://www.uniprot.org/uniprotkb/{uniprot_acc})" if uniprot_acc else ""
-                    st.markdown(
-                        f"**Missense Z:** {constraint.get('mis_z', 0):.2f} "
-                        f"({constraint.get('missense_interpretation', '')}) &nbsp;|&nbsp; "
-                        f"**o/e missense:** {constraint.get('oe_mis', 0):.3f} &nbsp;|&nbsp; "
-                        f"**pLI:** {constraint.get('pli', 0):.4f} &nbsp;|&nbsp; "
-                        f"**LOEUF:** {constraint.get('loeuf', 0):.3f} "
-                        f"({constraint.get('lof_interpretation', '')}) &nbsp;|&nbsp; "
-                        f"**UniProt:** {uniprot_link}"
-                    )
-
-                # Domains
-                domains = uniprot_data.get("domains", [])
-                if domains:
-                    st.markdown(f"**Functional domains** (protein length: {uniprot_data.get('protein_length', '?')} aa):")
-                    domain_rows = []
-                    for d in domains:
-                        is_hit = (uniprot_data.get("variant_in_domain") or {}).get("start") == d["start"]
-                        domain_rows.append({
-                            "Type": d["type"],
-                            "Name": d["description"],
-                            "Position": f"aa {d['start']}-{d['end']}",
-                            "Variant": "\U0001f534 IN DOMAIN" if is_hit else "",
-                        })
-                    st.dataframe(domain_rows, use_container_width=True, hide_index=True)
-
-                # PM1 / PM4 / BP3 flags
-                pm1_met = acmg_crit.get("PM1_met", False)
-                pm4_met = acmg_crit.get("PM4_met", False)
-                bp3_met = acmg_crit.get("BP3_met", False)
-                st.markdown(
-                    f"{'\u2705' if pm1_met else '\u274C'} **PM1** (functional domain) "
-                    f"{'(' + acmg_crit.get('PM1_strength', '') + ')' if pm1_met else ''} &nbsp;&nbsp; "
-                    f"{'\u2705' if pm4_met else '\u274C'} **PM4** (protein length change) &nbsp;&nbsp; "
-                    f"{'\u2705' if bp3_met else '\u274C'} **BP3** (in-frame in repeat)"
-                )
-
-    # --- Literature Evidence (LitVar) ---
-    pubmed_data = fs.get("pubmed")
-    if pubmed_data and isinstance(pubmed_data, dict) and pubmed_data.get("available"):
-        with st.expander("\U0001f4da Literature Evidence (LitVar)", expanded=True):
-            rsid_lit = pubmed_data.get("rsid", "")
-            litvar_link = f"[LitVar](https://www.ncbi.nlm.nih.gov/research/litvar2/docsum?query={rsid_lit})" if rsid_lit else ""
-
-            st.markdown(
-                f"**Publications:** {pubmed_data.get('pmids_count', 0)} &nbsp;|&nbsp; "
-                f"**Case Reports:** {pubmed_data.get('case_report_count', 0)} &nbsp;|&nbsp; "
-                f"**Functional Studies:** {pubmed_data.get('functional_study_count', 0)} &nbsp;|&nbsp; "
-                f"**Reviews:** {pubmed_data.get('review_count', 0)} &nbsp;|&nbsp; "
-                f"**First Published:** {pubmed_data.get('first_published', 'N/A')} &nbsp;|&nbsp; "
-                f"**Literature Significance:** {pubmed_data.get('clinical_significance', 'N/A')} &nbsp;|&nbsp; "
-                f"{litvar_link}"
-            )
-
-            # Disease associations
-            diseases = pubmed_data.get("diseases", [])
-            if diseases:
-                st.markdown("**Disease Associations:**")
-                disease_rows = []
-                for dname, dcount in diseases[:10]:
-                    disease_rows.append({"Disease": dname, "Publications": dcount})
-                st.dataframe(disease_rows, use_container_width=True, hide_index=True)
-
-            # Recent publications
-            pubs = pubmed_data.get("publications", [])
-            if pubs:
-                st.markdown(f"**Recent Publications** ({len(pubs)} of {pubmed_data.get('pmids_count', 0)}):")
-                pub_rows = []
-                for pub in pubs:
-                    pmid = pub.get("pmid", "")
-                    title = pub.get("title", "")[:100]
-                    year = pub.get("year", "")
-                    journal = pub.get("journal", "")
-                    types = ", ".join(pub.get("pub_types", []))
-                    pmid_link = f"[{pmid}](https://pubmed.ncbi.nlm.nih.gov/{pmid}/)"
-                    pub_rows.append({
-                        "PMID": pmid_link,
-                        "Year": year,
-                        "Title": title,
-                        "Journal": journal,
-                        "Type": types,
-                    })
-                st.dataframe(pub_rows, use_container_width=True, hide_index=True)
-
-            # Related genes and chemicals
-            related_genes = pubmed_data.get("related_genes", [])
-            related_chems = pubmed_data.get("related_chemicals", [])
-            if related_genes or related_chems:
-                rel_parts = []
+                related_genes = pubmed_data.get("related_genes", [])
+                related_chems = pubmed_data.get("related_chemicals", [])
                 if related_genes:
                     gene_strs = [f"{g['name']} ({g['count']})" for g in related_genes[:5]]
-                    rel_parts.append(f"**Related Genes:** {', '.join(gene_strs)}")
+                    st.markdown(f"**Related Genes:** {', '.join(gene_strs)}")
                 if related_chems:
                     chem_strs = [f"{c['name']} ({c['count']})" for c in related_chems[:5]]
-                    rel_parts.append(f"**Related Chemicals:** {', '.join(chem_strs)}")
-                st.markdown(" &nbsp;|&nbsp; ".join(rel_parts))
+                    st.markdown(f"**Related Chemicals:** {', '.join(chem_strs)}")
 
-    # --- Case-Control Analysis ---
-    if gnomad and af_data.get("variant_in_gnomad"):
-        with st.expander("\U0001f9ea Case-Control Analysis", expanded=False):
+            with col_pubs:
+                pubs = pubmed_data.get("publications", [])
+                if pubs:
+                    st.markdown(f"**Recent Publications** ({len(pubs)} of {pubmed_data.get('pmids_count', 0)}):")
+                    pub_rows = []
+                    for pub in pubs:
+                        pmid = pub.get("pmid", "")
+                        pmid_link = f"[{pmid}](https://pubmed.ncbi.nlm.nih.gov/{pmid}/)"
+                        pub_rows.append({
+                            "PMID": pmid_link, "Year": pub.get("year", ""),
+                            "Title": pub.get("title", "")[:100],
+                            "Journal": pub.get("journal", ""),
+                            "Type": ", ".join(pub.get("pub_types", [])),
+                        })
+                    st.dataframe(pub_rows, use_container_width=True, hide_index=True)
+
+                # BioMCP articles
+                biomcp_arts = pubmed_data.get("biomcp_articles", [])
+                if biomcp_arts:
+                    st.markdown(f"**Europe PMC** ({len(biomcp_arts)} articles)")
+                    art_rows = []
+                    for art in biomcp_arts:
+                        pmid = art.get("pmid", "")
+                        pmid_link = f"[{pmid}](https://pubmed.ncbi.nlm.nih.gov/{pmid}/)" if pmid else ""
+                        art_rows.append({
+                            "PMID": pmid_link, "Date": art.get("date", ""),
+                            "Title": art.get("title", "")[:120],
+                            "Citations": art.get("citation_count", 0),
+                        })
+                    st.dataframe(art_rows, use_container_width=True, hide_index=True)
+
+            # PubTator3
+            if pubmed_data.get("pubtator3_articles"):
+                with st.expander(f"PubTator3 NLP-Annotated ({len(pubmed_data['pubtator3_articles'])} articles)"):
+                    pt3_arts = pubmed_data["pubtator3_articles"]
+                    pt3_rows = []
+                    for art in pt3_arts:
+                        pmid = art.get("pmid", "")
+                        pmid_link = f"[{pmid}](https://pubmed.ncbi.nlm.nih.gov/{pmid}/)" if pmid else ""
+                        pt3_rows.append({
+                            "PMID": pmid_link,
+                            "Score": f"{art.get('score', 0):.0f}",
+                            "Title": art.get("title", "")[:120],
+                        })
+                    st.dataframe(pt3_rows, use_container_width=True, hide_index=True)
+
+                    pt3_annots = pubmed_data.get("pubtator3_annotations", [])
+                    if pt3_annots:
+                        all_variants = set()
+                        all_diseases = set()
+                        all_genes = set()
+                        for ann_article in pt3_annots:
+                            for ann in ann_article.get("annotations", []):
+                                atype = ann.get("type", "")
+                                atext = ann.get("text", "")
+                                if atype == "Variant": all_variants.add(atext)
+                                elif atype == "Disease": all_diseases.add(atext)
+                                elif atype == "Gene": all_genes.add(atext)
+                        if all_variants:
+                            st.markdown(f"**Variants:** {', '.join(sorted(all_variants)[:15])}")
+                        if all_diseases:
+                            st.markdown(f"**Diseases:** {', '.join(sorted(all_diseases)[:15])}")
+        else:
+            st.info("No literature data available.")
+
+    # ---- TAB: Structure ----
+    with tab_struct:
+        protein_info = fs.get("protein_info")
+        if protein_info:
+            col_func, col_pdb = st.columns(2)
+            with col_func:
+                accession = protein_info.get("accession", "")
+                uniprot_link = f"[{accession}](https://www.uniprot.org/uniprot/{accession})" if accession else ""
+                af_link = f"[AlphaFold](https://alphafold.ebi.ac.uk/entry/{accession})" if accession else ""
+                st.markdown(
+                    f"**{protein_info.get('name', 'N/A')}** &nbsp;|&nbsp; "
+                    f"**Length:** {protein_info.get('length', 0)} aa &nbsp;|&nbsp; "
+                    f"{uniprot_link} &nbsp;|&nbsp; {af_link}"
+                )
+
+                func_text = protein_info.get("function", "")
+                if func_text:
+                    st.markdown(f"**Function:** {func_text[:600]}{'...' if len(func_text) > 600 else ''}")
+
+                interpro = protein_info.get("interpro_domains", [])
+                if interpro:
+                    st.markdown(f"**InterPro Domains** ({len(interpro)})")
+                    domain_rows = [{"Accession": d.get("accession", ""), "Name": d.get("name", ""), "Type": d.get("domain_type", "")} for d in interpro]
+                    st.dataframe(domain_rows, use_container_width=True, hide_index=True)
+
+            with col_pdb:
+                pdb_data = fs.get("pdb") or {}
+                pdb_structs = protein_info.get("pdb_structures", [])
+                if pdb_structs:
+                    st.markdown(f"**PDB Structures** ({pdb_data.get('count', len(pdb_structs))} total)")
+                    pdb_rows = []
+                    for s in pdb_structs[:10]:
+                        pdb_id = str(s).split(" ")[0] if isinstance(s, str) else str(s)
+                        pdb_link = f"[{pdb_id}](https://www.rcsb.org/structure/{pdb_id})"
+                        pdb_rows.append({"Structure": pdb_link, "Details": str(s)})
+                    st.dataframe(pdb_rows, use_container_width=True, hide_index=True)
+        else:
+            st.info("No protein structure data available.")
+
+    # ---- TAB: Public Datasets ----
+    with tab_pubdata:
+        gwas_data = fs.get("gwas")
+        clingen_data = fs.get("clingen")
+        civic_data = fs.get("civic")
+
+        # --- GWAS Catalog ---
+        st.markdown("#### GWAS Catalog")
+        if gwas_data:
+            st.markdown(f"**{len(gwas_data)} associations** from NHGRI-EBI GWAS Catalog")
+            gwas_rows = []
+            for a in gwas_data[:20]:
+                pv = a.get("p_value")
+                pv_str = f"{pv:.2e}" if pv is not None and pv < 0.001 else str(pv) if pv is not None else ""
+                pmid = a.get("pmid", "")
+                pmid_link = f"[{pmid}](https://pubmed.ncbi.nlm.nih.gov/{pmid}/)" if pmid else ""
+                gwas_rows.append({
+                    "Trait": a.get("trait_name", ""), "p-value": pv_str,
+                    "Effect": f"{a.get('effect_size', '')} ({a.get('effect_type', '')})" if a.get("effect_size") else "",
+                    "Risk Allele": a.get("risk_allele", ""),
+                    "RAF": a.get("risk_allele_frequency", ""),
+                    "PMID": pmid_link,
+                })
+            st.dataframe(gwas_rows, use_container_width=True, hide_index=True)
+        else:
+            st.info("No GWAS associations found for this variant.")
+
+        st.divider()
+
+        # --- ClinGen ---
+        col_clingen, col_civic = st.columns(2)
+        with col_clingen:
+            st.markdown("#### ClinGen")
+            if clingen_data:
+                validity = clingen_data.get("validity", [])
+                if validity:
+                    st.markdown("**Gene-Disease Validity**")
+                    val_rows = [{"Disease": v.get("disease", ""), "Classification": v.get("classification", ""),
+                                 "MOI": v.get("moi", ""), "Date": v.get("review_date", "")} for v in validity]
+                    st.dataframe(val_rows, use_container_width=True, hide_index=True)
+
+                haplo = clingen_data.get("haploinsufficiency", "")
+                triplo = clingen_data.get("triplosensitivity", "")
+                if haplo or triplo:
+                    st.markdown("**Dosage Sensitivity**")
+                    st.markdown(f"**Haploinsufficiency:** {haplo or 'N/A'} &nbsp;|&nbsp; **Triplosensitivity:** {triplo or 'N/A'}")
+            else:
+                st.info("No ClinGen data available.")
+
+        with col_civic:
+            st.markdown("#### CIViC")
+            if civic_data:
+                cached = civic_data.get("cached_evidence", [])
+                if cached:
+                    st.markdown(f"**{len(cached)} evidence items**")
+                    by_type: dict[str, list] = {}
+                    for ev in cached:
+                        by_type.setdefault(ev.get("evidence_type", "OTHER"), []).append(ev)
+                    for etype, items in sorted(by_type.items()):
+                        st.markdown(f"*{etype}* ({len(items)})")
+                        ev_rows = [{
+                            "ID": ev.get("name", ""),
+                            "Level": ev.get("evidence_level", ""),
+                            "Significance": ev.get("significance", ""),
+                            "Disease": ev.get("disease", ""),
+                            "Therapies": ", ".join(ev.get("therapies", [])) or "\u2014",
+                        } for ev in items]
+                        st.dataframe(ev_rows, use_container_width=True, hide_index=True)
+
+                assertions = civic_data.get("graphql_assertions", [])
+                if assertions:
+                    st.markdown("**CIViC Assertions**")
+                    assert_rows = [{
+                        "ID": a.get("name", ""),
+                        "AMP Level": a.get("amp_level", ""),
+                        "Disease": a.get("disease", ""),
+                        "Therapies": ", ".join(a.get("therapies", [])) or "\u2014",
+                    } for a in assertions]
+                    st.dataframe(assert_rows, use_container_width=True, hide_index=True)
+            else:
+                st.info("No CIViC data available.")
+
+        st.divider()
+
+        # --- TCGA ---
+        st.markdown("#### TCGA")
+        st.markdown(
+            '<div style="background:#f0f2f6; border-radius:8px; padding:16px; text-align:center; '
+            'color:#555; font-size:0.95rem; border:1px dashed #ccc;">'
+            '<strong>TCGA germline and somatic prevalence coming soon</strong><br>'
+            '<span style="font-size:0.8rem; color:#888;">'
+            'Planned: germline carrier frequency across 33 cancer types, '
+            'somatic mutation hotspots, and co-occurrence analysis from TCGA PanCanAtlas'
+            '</span></div>',
+            unsafe_allow_html=True,
+        )
+
+    # ---- TAB: Pathways ----
+    with tab_pathways:
+        pathway_data = fs.get("pathways")
+        drug_data = fs.get("druggability")
+
+        col_pw, col_drug = st.columns(2)
+
+        with col_pw:
+            if pathway_data:
+                st.markdown(f"**Reactome Pathways** ({len(pathway_data)})")
+                pw_rows = []
+                for p in pathway_data[:20]:
+                    pid = p.get("id", "")
+                    reactome_link = f"[{pid}](https://reactome.org/content/detail/{pid})" if pid.startswith("R-") else pid
+                    pw_rows.append({"ID": reactome_link, "Name": p.get("name", "")})
+                st.dataframe(pw_rows, use_container_width=True, hide_index=True)
+            else:
+                st.info("No pathway data available.")
+
+        with col_drug:
+            if drug_data and (drug_data.get("categories") or drug_data.get("interactions")):
+                st.markdown("**Druggability (DGIdb)**")
+                cats = drug_data.get("categories", [])
+                if cats:
+                    st.markdown(f"**Categories:** {', '.join(cats)}")
+
+                interactions = drug_data.get("interactions", [])
+                if interactions:
+                    approved = [i for i in interactions if i.get("approved")]
+                    st.markdown(f"**Interactions:** {len(interactions)} total, **{len(approved)} approved**")
+                    if approved:
+                        drug_rows = [{
+                            "Drug": i.get("drug", ""),
+                            "Types": ", ".join(i.get("interaction_types", [])) if i.get("interaction_types") else "\u2014",
+                            "Score": i.get("score", ""),
+                        } for i in approved[:10]]
+                        st.dataframe(drug_rows, use_container_width=True, hide_index=True)
+            else:
+                st.info("No druggability data available.")
+
+    # ---- TAB: Case-Control ----
+    with tab_cc:
+        if gnomad and af_data.get("variant_in_gnomad"):
             st.markdown("Compare your cohort's variant frequency against gnomAD populations.")
 
-            # Ethnicity-specific toggle (above overall so auto-sum can work)
+            # Fisher's control selection — explicit label
+            # Determine which controls cohort will be used
+            ctrl_block = gnomad.get("controls", {})
+            ctrl_label = ctrl_block.get("label", "Controls")
+            if not ctrl_block.get("available"):
+                ctrl_block = gnomad.get("overall", {})
+                ctrl_label = ctrl_block.get("label", "Overall")
+
+            st.info(f"Using **{ctrl_label}** as reference population for Fisher's test")
+
             use_eth = st.checkbox("Provide ethnicity-specific counts", key="use_eth_input")
 
-            # Collect per-ethnicity data first (if enabled)
             eth_case_data: dict[str, dict[str, int]] = {}
             if use_eth:
-                st.markdown("**Per-ancestry case counts** *(fill in ancestries you have data for)*")
+                st.markdown("**Per-ancestry case counts**")
                 pops_available = af_data.get("populations", {})
                 eth_cols = st.columns(3)
                 col_idx = 0
@@ -595,29 +1014,20 @@ if "final_state" in st.session_state:
                             eth_case_data[pid] = {"carriers": ec, "total": et}
                     col_idx += 1
 
-            # Auto-sum from ethnicity rows if any are filled
             eth_sum_carriers = sum(d["carriers"] for d in eth_case_data.values())
             eth_sum_total = sum(d["total"] for d in eth_case_data.values())
 
-            # Overall fields — auto-populated from ethnicity sum, but user can override
-            st.markdown("**Overall cohort**" + (" *(auto-summed from ancestries, editable)*" if eth_case_data else ""))
+            st.markdown("**Overall cohort**" + (" *(auto-summed)*" if eth_case_data else ""))
             oc1, oc2 = st.columns(2)
             with oc1:
                 default_carriers = eth_sum_carriers if eth_case_data else 1
-                overall_carriers = st.number_input(
-                    "Carriers", min_value=0, value=default_carriers, step=1, key="cc_overall_carriers"
-                )
+                overall_carriers = st.number_input("Carriers", min_value=0, value=default_carriers, step=1, key="cc_overall_carriers")
             with oc2:
                 default_total = eth_sum_total if eth_case_data else 100
-                overall_total = st.number_input(
-                    "Total samples", min_value=1, value=max(default_total, 1), step=1, key="cc_overall_total"
-                )
+                overall_total = st.number_input("Total samples", min_value=1, value=max(default_total, 1), step=1, key="cc_overall_total")
 
-            # Build case_data dict
             case_data = {"overall": {"carriers": overall_carriers, "total": overall_total}}
             case_data.update(eth_case_data)
-
-            # Count how many ethnicities have user data
             eth_with_data = [p for p in case_data if p != "overall"]
             n_eth_with_data = len(eth_with_data)
 
@@ -626,26 +1036,18 @@ if "final_state" in st.session_state:
             if run_cc and overall_total > 0:
                 from tools.case_control import run_case_control_analysis
 
-                # Use controls cohort (already fetched by gnomad_agent)
-                ctrl_block = gnomad.get("controls", {})
-                if not ctrl_block.get("available"):
-                    st.warning("Controls dataset not available — using overall gnomAD")
-                    ctrl_block = gnomad.get("overall", {})
-
-                # Build gnomad_data-like dict from controls block
                 ctrl_exome = ctrl_block.get("exome") or {}
                 ctrl_genome = ctrl_block.get("genome") or {}
                 ds_data = {
                     "ac": ctrl_exome.get("ac", 0) + ctrl_genome.get("ac", 0),
                     "an": ctrl_exome.get("an", 0) + ctrl_genome.get("an", 0),
                     "populations": ctrl_block.get("populations", {}),
-                    "dataset_label": ctrl_block.get("dataset_label", "Controls"),
+                    "dataset_label": ctrl_label,
                 }
 
-                ds_label = ctrl_block.get("dataset_label", "Controls")
                 ctrl_ds = ctrl_block.get("dataset", gnomad.get("dataset", ""))
                 gn_link = _gnomad_link(gnomad.get("gnomad_variant_id", ""), ctrl_ds)
-                st.markdown(f"**Control cohort:** {ds_label} {gn_link}")
+                st.markdown(f"**Control cohort:** {ctrl_label} {gn_link}")
 
                 analysis_case_data = {"overall": case_data["overall"]}
                 analysis_case_data.update(eth_case_data)
@@ -663,7 +1065,6 @@ if "final_state" in st.session_state:
                     f"| OR={or_str} | :{sig_color}[p={pv_str}]"
                 )
 
-                # Per-ancestry table
                 anc = cc_result.get("ancestry_fishers", [])
                 if anc:
                     rows = []
@@ -674,22 +1075,19 @@ if "final_state" in st.session_state:
                         pop_id = ar.get("population_id", "")
                         has_user_data = pop_id in eth_case_data
                         source_tag = "" if has_user_data else " (using overall)"
-
                         rows.append({
                             "Population": ar.get("population", "") + source_tag,
-                            "Case (carriers/total)": f"{ar['case_ac']}/{ar['case_an']//2}",
-                            "Control (AC/AN)": f"{ar['control_ac']}/{ar['control_an']}",
+                            "Case": f"{ar['case_ac']}/{ar['case_an']//2}",
+                            "Control": f"{ar['control_ac']}/{ar['control_an']}",
                             "Case AF": f"{ar['case_af']:.4f}",
-                            "Control AF": f"{ar['control_af']:.6f}",
+                            "Ctrl AF": f"{ar['control_af']:.6f}",
                             "OR": f"{or_v:.2f}" if or_v and or_v != float("inf") else "Inf",
-                            "p-value": f"{pv:.2e}" if pv and pv < 0.001 else f"{pv:.4f}" if pv else "N/A",
+                            "p": f"{pv:.2e}" if pv and pv < 0.001 else f"{pv:.4f}" if pv else "N/A",
                             "Sig": "\u2705" if ar.get("significant") else "",
                         })
-
                         if has_user_data and or_v and or_v != float("inf") and or_v > 0:
                             plot_data.append({
-                                "pop": ar.get("population", ""),
-                                "or": or_v,
+                                "pop": ar.get("population", ""), "or": or_v,
                                 "ci_lo": ar.get("ci_lower", or_v * 0.5),
                                 "ci_hi": ar.get("ci_upper", or_v * 2),
                                 "sig": ar.get("significant", False),
@@ -697,33 +1095,28 @@ if "final_state" in st.session_state:
 
                     st.dataframe(rows, use_container_width=True, hide_index=True)
 
-                    # Forest plot — only ethnicities with user data
                     if plot_data:
                         import plotly.graph_objects as go
                         fig = go.Figure()
                         pops_sorted = sorted(plot_data, key=lambda x: x["or"])
                         fig.add_trace(go.Scatter(
-                            x=[d["or"] for d in pops_sorted],
-                            y=[d["pop"] for d in pops_sorted],
+                            x=[d["or"] for d in pops_sorted], y=[d["pop"] for d in pops_sorted],
                             mode="markers",
                             marker=dict(size=10, color=["#ff4b4b" if d["sig"] else "#888" for d in pops_sorted]),
-                            error_x=dict(
-                                type="data", symmetric=False,
+                            error_x=dict(type="data", symmetric=False,
                                 array=[d["ci_hi"] - d["or"] for d in pops_sorted],
-                                arrayminus=[d["or"] - d["ci_lo"] for d in pops_sorted],
-                            ),
+                                arrayminus=[d["or"] - d["ci_lo"] for d in pops_sorted]),
                             hovertemplate="%{y}<br>OR=%{x:.2f}<extra></extra>",
                         ))
                         fig.add_vline(x=1, line_dash="dash", line_color="gray")
                         fig.update_layout(
-                            title="Forest Plot — OR by Ancestry (user-specified, vs controls)",
+                            title="Forest Plot — OR by Ancestry (vs controls)",
                             xaxis_title="Odds Ratio (log scale)", xaxis_type="log",
                             height=max(300, len(pops_sorted) * 50 + 100),
                             showlegend=False, margin=dict(l=200), font=dict(size=13),
                         )
                         st.plotly_chart(fig, use_container_width=True)
 
-                # Weighted GLM
                 if n_eth_with_data >= 2:
                     glm = cc_result.get("weighted_glm", {})
                     if glm.get("p_value") is not None:
@@ -733,55 +1126,22 @@ if "final_state" in st.session_state:
                     elif glm.get("interpretation"):
                         st.markdown(f"**Weighted GLM:** {glm['interpretation']}")
                 elif use_eth:
-                    st.info("Provide at least 2 ethnicities with data to enable weighted GLM." if n_eth_with_data < 2 else "")
-
-    # --- ACMG Criteria ---
-    with st.expander("\U0001f3af ACMG Criteria", expanded=True):
-        criteria = fs.get("criteria_triggered") or []
-        met = [c for c in criteria if c.get("met", True)]
-        unmet = [c for c in criteria if not c.get("met", True)]
-        if not met and not unmet:
-            st.info("No ACMG criteria evaluated.")
+                    st.info("Provide at least 2 ethnicities for weighted GLM.")
         else:
-            if met:
-                st.markdown("**Criteria Met:**")
-                for c in met:
-                    d = c.get("direction", "")
-                    icon = "\U0001f534" if d == "pathogenic" else "\U0001f7e2"
-                    st.markdown(f"{icon} **{c.get('code','')}** ({c.get('strength','')}) \u2014 {c.get('justification','')}")
-            if unmet:
-                with st.expander(f"Criteria Not Met / Not Evaluable ({len(unmet)})"):
-                    for c in unmet:
-                        st.markdown(f"\u2B1C **{c.get('code','')}** \u2014 {c.get('justification','')}")
+            st.info("Variant must be present in gnomAD for case-control analysis.")
 
-    # --- Classification ---
-    with st.expander("\U0001f3c6 Final Classification", expanded=True):
-        classification = fs.get("classification", "VUS")
-        colors = {
-            "Pathogenic": ("#ff4b4b", "#fff"), "Likely Pathogenic": ("#ff8c00", "#fff"),
-            "VUS": ("#ffd700", "#333"), "Likely Benign": ("#90ee90", "#333"), "Benign": ("#4caf50", "#fff"),
-        }
-        bg, fg = colors.get(classification, ("#ffd700", "#333"))
-        st.markdown(
-            f'<div style="background:{bg};color:{fg};padding:16px;border-radius:8px;'
-            f'text-align:center;font-size:1.3rem;font-weight:bold;margin:8px 0">'
-            f'{classification}</div>', unsafe_allow_html=True,
-        )
-        st.markdown(f"**Confidence:** {fs.get('confidence','Low')}")
-        st.markdown(f"**Reasoning:** {fs.get('reasoning','')}")
-
-    # Warnings
+    # ===================================================================
+    # Warnings + Disclaimer + Debug (compact footer)
+    # ===================================================================
     warnings = fs.get("warnings", [])
     if warnings:
         with st.expander(f"\u26A0\uFE0F Warnings ({len(warnings)})"):
             for w in warnings: st.markdown(f"- {w}")
 
-    # Disclaimer
     st.divider()
     if fs.get("disclaimer"):
         st.markdown(f'<p style="color:gray;font-size:0.75rem">{fs["disclaimer"]}</p>', unsafe_allow_html=True)
 
-    # Debug
     with st.expander("\U0001f41b Debug: Full State JSON"):
         debug = {}
         for k, v in fs.items():

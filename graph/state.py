@@ -58,12 +58,24 @@ class VariantState(TypedDict):
     pubmed: Optional[Dict[str, Any]]
     pubmed_error: Optional[str]
 
-    # --- AlphaFold + PDB evidence (Phase 4) ---
+    # --- Structural evidence (AlphaFold + PDB + InterPro via BioMCP) ---
     alphafold: Optional[Dict[str, Any]]
     pdb: Optional[Dict[str, Any]]
+    protein_info: Optional[Dict[str, Any]]
     structural_error: Optional[str]
 
-    # --- TCGA somatic evidence (Phase 5) ---
+    # --- Clinical evidence (CIViC + ClinGen + GWAS via BioMCP) ---
+    civic: Optional[Dict[str, Any]]
+    clingen: Optional[Dict[str, Any]]
+    gwas: Optional[List[Dict[str, Any]]]
+    clinical_evidence_error: Optional[str]
+
+    # --- Pathway + Druggability (via BioMCP) ---
+    pathways: Optional[List[Dict[str, Any]]]
+    druggability: Optional[Dict[str, Any]]
+    pathway_error: Optional[str]
+
+    # --- Legacy TCGA fields (kept for compat) ---
     tcga_somatic: Optional[Dict[str, Any]]
     tcga_expression: Optional[Dict[str, Any]]
     tcga_error: Optional[str]
@@ -106,7 +118,15 @@ def make_initial_state(raw_input: str) -> VariantState:
         pubmed_error=None,
         alphafold=None,
         pdb=None,
+        protein_info=None,
         structural_error=None,
+        civic=None,
+        clingen=None,
+        gwas=None,
+        clinical_evidence_error=None,
+        pathways=None,
+        druggability=None,
+        pathway_error=None,
         tcga_somatic=None,
         tcga_expression=None,
         tcga_error=None,

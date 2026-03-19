@@ -10,6 +10,7 @@ from agents.alphafold_agent import alphafold_agent_node
 from agents.clinvar_agent import clinvar_agent_node
 from agents.gnomad_agent import gnomad_agent_node
 from agents.input_parser import input_parser_node
+from agents.pathway_agent import pathway_agent_node
 from agents.pubmed_agent import pubmed_agent_node
 from agents.tcga_agent import tcga_agent_node
 from graph.state import VariantState, make_initial_state
@@ -24,7 +25,8 @@ def build_graph() -> StateGraph:
     Graph topology:
         START → input_parser → supervisor ─┬─→ clinvar_agent → gnomad_agent
                                             │    → pubmed_agent → alphafold_agent
-                                            │    → tcga_agent → acmg_classifier → END
+                                            │    → tcga_agent → pathway_agent
+                                            │    → acmg_classifier → END
                                             │
                                             └─→ END  (on parse error)
     """
@@ -38,6 +40,7 @@ def build_graph() -> StateGraph:
     graph.add_node("pubmed_agent", pubmed_agent_node)
     graph.add_node("alphafold_agent", alphafold_agent_node)
     graph.add_node("tcga_agent", tcga_agent_node)
+    graph.add_node("pathway_agent", pathway_agent_node)
     graph.add_node("acmg_classifier", acmg_classifier_node)
 
     # --- Add edges ---
@@ -62,7 +65,8 @@ def build_graph() -> StateGraph:
     graph.add_edge("gnomad_agent", "pubmed_agent")
     graph.add_edge("pubmed_agent", "alphafold_agent")
     graph.add_edge("alphafold_agent", "tcga_agent")
-    graph.add_edge("tcga_agent", "acmg_classifier")
+    graph.add_edge("tcga_agent", "pathway_agent")
+    graph.add_edge("pathway_agent", "acmg_classifier")
 
     # acmg_classifier → END
     graph.add_edge("acmg_classifier", END)

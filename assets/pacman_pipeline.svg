@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 90" width="820" height="90">
+  <defs>
+    <linearGradient id="pg2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FFB300"/>
+      <stop offset="100%" stop-color="#FF8F00"/>
+    </linearGradient>
+  </defs>
+  <style>
+    .dot-eaten { fill: #e0e0e0; opacity: 0.4; }
+    .dot-pending { fill: #FFD54F; }
+    .dot-label { fill: #666; font-size: 11px; font-family: Arial,Helvetica,sans-serif; text-anchor: middle; }
+  </style>
+
+  <!-- Eaten dots (completed steps) -->
+  <circle cx="50" cy="35" r="8" class="dot-eaten"/>
+  <text x="50" y="65" class="dot-label">Parse</text>
+
+  <circle cx="140" cy="35" r="8" class="dot-eaten"/>
+  <text x="140" y="65" class="dot-label">Route</text>
+
+  <circle cx="230" cy="35" r="8" class="dot-eaten"/>
+  <text x="230" y="65" class="dot-label">ClinVar</text>
+
+  <circle cx="320" cy="35" r="8" class="dot-eaten"/>
+  <text x="320" y="65" class="dot-label">gnomAD</text>
+
+  <!-- Pac-man character (currently eating Literature) -->
+  <g transform="translate(388, 35)">
+    <path d="M0 -16 A16 16 0 1 1 0 16 A16 16 0 1 1 0 -16 Z" fill="url(#pg2)"/>
+    <path d="M0 0 L18 -10 L18 10 Z" fill="white"/>
+    <circle cx="4" cy="-7" r="2.5" fill="#333"/>
+    <circle cx="5" cy="-8" r="1" fill="white"/>
+  </g>
+
+  <!-- Pending dots (upcoming steps) -->
+  <circle cx="460" cy="35" r="8" class="dot-pending"/>
+  <text x="460" y="65" class="dot-label">Literature</text>
+
+  <circle cx="550" cy="35" r="8" class="dot-pending"/>
+  <text x="550" y="65" class="dot-label">Protein</text>
+
+  <circle cx="640" cy="35" r="8" class="dot-pending"/>
+  <text x="640" y="65" class="dot-label">Clinical</text>
+
+  <circle cx="730" cy="35" r="8" class="dot-pending"/>
+  <text x="730" y="65" class="dot-label">Pathways</text>
+
+  <circle cx="800" cy="35" r="8" class="dot-pending"/>
+  <text x="800" y="65" class="dot-label">ACMG</text>
+</svg>

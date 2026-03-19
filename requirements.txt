@@ -10,3 +10,4 @@ scipy>=1.11.0
 statsmodels>=0.14.0
 numpy>=1.24.0
 plotly>=5.15.0
+biomcp-cli>=0.8.16

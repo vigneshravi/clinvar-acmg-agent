@@ -1,6 +1,8 @@
-# ClinVar ACMG Variant Classifier
+![PathoMAN 2.0](assets/pathoman_logo.svg)
 
-An AI-powered genomic variant annotation and classification tool built with LangGraph multi-agent architecture, Streamlit, and Claude (claude-sonnet-4-5). It integrates evidence from ClinVar, gnomAD, dbNSFP, UniProt, LitVar, and Ensembl VEP to produce ACMG/AMP 2015-compliant variant classifications with full transparency into every decision.
+# PathoMAN 2.0
+
+An AI-powered genomic variant annotation and classification tool built with LangGraph multi-agent architecture, Streamlit, and Claude (claude-sonnet-4-5). It integrates evidence from **12+ data sources** — ClinVar, gnomAD (v4 + v3 + v2), dbNSFP, UniProt, LitVar, PubTator3, Europe PMC, CIViC, ClinGen, GWAS Catalog, Reactome, and DGIdb — via direct APIs and **BioMCP** to produce ACMG/AMP 2015-compliant variant classifications with full transparency into every decision.
 
 > **DISCLAIMER:** This is a research prototype. It has **not** been validated for clinical use. Variant classifications should be reviewed by a certified clinical molecular geneticist and confirmed through validated, CLIA-certified processes.
 
@@ -10,7 +12,9 @@ An AI-powered genomic variant annotation and classification tool built with Lang
 
 - [Architecture Overview](#architecture-overview)
 - [Data Sources & Evidence Flow](#data-sources--evidence-flow)
+- [gnomAD Cohort Configuration](#gnomad-cohort-configuration)
 - [ACMG Criteria Implementation](#acmg-criteria-implementation)
+- [UI Design](#ui-design)
 - [Step-by-Step Classification Walkthrough](#step-by-step-classification-walkthrough)
 - [Assumptions & Design Decisions](#assumptions--design-decisions)
 - [Project Structure](#project-structure)
@@ -22,30 +26,40 @@ An AI-powered genomic variant annotation and classification tool built with Lang
 
 ## Architecture Overview
 
-The application uses a **LangGraph StateGraph** with 8 sequential nodes. Each node is an independent agent that reads from and writes to a shared `VariantState` dictionary.
+The application uses a **LangGraph StateGraph** with **9 sequential nodes**. Each node is an independent agent that reads from and writes to a shared `VariantState` dictionary. During processing, a pac-man animation eats through the pipeline stages:
+
+![Pipeline Animation](assets/pacman_pipeline.svg)
 
 ### System Architecture Flowchart
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        STREAMLIT UI (app.py)                        │
+│                    STREAMLIT UI (app.py)                             │
+│  PathoMAN 2.0 — AI-Powered ACMG Variant Classification             │
+│                                                                     │
 │  ┌─────────────────┐  ┌──────────────────┐  ┌───────────────────┐  │
-│  │ Gene + HGVS     │  │ Genomic          │  │ Look Up           │  │
-│  │ Input           │  │ Coordinates      │  │ Transcripts       │  │
+│  │ Gene + HGVS     │  │ Genomic          │  │ Look Up / Classify│  │
+│  │ Input           │  │ Coordinates      │  │ (auto-resolve)    │  │
 │  └────────┬────────┘  └────────┬─────────┘  └────────┬──────────┘  │
 │           └────────────────────┴─────────────────────┘             │
 │                                │                                    │
-│                    ┌───────────▼───────────┐                       │
-│                    │   Classify Variant    │                       │
-│                    └───────────┬───────────┘                       │
-└────────────────────────────────┼────────────────────────────────────┘
+│                   [Pac-Man Pipeline Animation]                      │
+│                                │                                    │
+│  ┌─── CLASSIFICATION HERO BANNER ──────────────────────────────┐   │
+│  │  ████ PATHOGENIC ████  Confidence: High  │  Reasoning       │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│  [ACMG Criteria Pills: PVS1 PS1 PS3 PM2 BA1 BS1 BP4 ...]         │
+│                                                                     │
+│  TABS: [Frequencies] [ClinVar] [Literature] [Structure]            │
+│        [Public Datasets] [Pathways] [Case-Control]                  │
+└─────────────────────────────────────────────────────────────────────┘
                                  │
                     ┌────────────▼────────────┐
                     │     LangGraph Pipeline   │
                     └────────────┬────────────┘
                                  │
 ┌────────────────────────────────▼────────────────────────────────────┐
-│                         GRAPH NODES                                 │
+│                         GRAPH NODES (9)                              │
 │                                                                     │
 │  ┌──────────────┐    ┌────────────┐    ┌──────────────────────┐    │
 │  │ 1. INPUT     │───▶│ 2. SUPER-  │───▶│ 3. CLINVAR AGENT     │    │
@@ -67,41 +81,57 @@ The application uses a **LangGraph StateGraph** with 8 sequential nodes. Each no
 │  │ │ gnomAD      │ │ MyVariant   │ │ gnomAD     │ │ UniProt │ │   │
 │  │ │ GraphQL     │ │ .info       │ │ Gene       │ │ REST    │ │   │
 │  │ │             │ │             │ │ Constraint │ │         │ │   │
-│  │ │ • 3 cohorts │ │ • dbNSFP    │ │            │ │ Domains │ │   │
-│  │ │   overall   │ │   REVEL     │ │ • mis_z    │ │ Repeats │ │   │
-│  │ │   non-cancer│ │   CADD      │ │ • LOEUF    │ │ Motifs  │ │   │
-│  │ │   controls  │ │   MetaRNN   │ │ • pLI      │ │         │ │   │
-│  │ │ • Per-pop   │ │   BayesDel  │ │            │ │         │ │   │
-│  │ │   AFs       │ │   AlphaM.   │ │            │ │         │ │   │
-│  │ │ • rsID      │ │   SIFT      │ │            │ │         │ │   │
-│  │ │   lookup    │ │   PolyPhen  │ │            │ │         │ │   │
-│  │ │             │ │ • Conserv.  │ │            │ │         │ │   │
-│  │ │             │ │   phyloP    │ │            │ │         │ │   │
-│  │ │             │ │   phastCons │ │            │ │         │ │   │
-│  │ │             │ │   GERP++    │ │            │ │         │ │   │
+│  │ │ • 4 cohorts │ │ • dbNSFP    │ │            │ │ Domains │ │   │
+│  │ │   v4 807K   │ │   REVEL     │ │ • mis_z    │ │ Repeats │ │   │
+│  │ │   v3 76K    │ │   CADD      │ │ • LOEUF    │ │ Motifs  │ │   │
+│  │ │   non-cancer│ │   MetaRNN   │ │ • pLI      │ │         │ │   │
+│  │ │   controls  │ │   BayesDel  │ │            │ │         │ │   │
+│  │ │ • Per-pop   │ │   AlphaM.   │ │            │ │         │ │   │
+│  │ │   AFs       │ │   SIFT      │ │            │ │         │ │   │
+│  │ │ • rsID      │ │   PolyPhen  │ │            │ │         │ │   │
+│  │ │   lookup    │ │ • Conserv.  │ │            │ │         │ │   │
 │  │ └─────────────┘ └─────────────┘ └────────────┘ └─────────┘ │   │
 │  │                                                              │   │
 │  │ Pre-computes: BA1, BS1, PM2, PP3, BP4, PM1, PM4, BP3        │   │
 │  └──────────────────────────────────────────┬───────────────────┘   │
 │                                              │                      │
 │  ┌───────────────────────────────────────────▼──────────────────┐   │
-│  │ 5. LITVAR / PUBMED AGENT                                     │   │
+│  │ 5. LITERATURE AGENT                                          │   │
 │  │                                                               │   │
 │  │ • LitVar entity search by rsID                                │   │
-│  │ • Publication count + disease associations                    │   │
+│  │ • PubTator3 NLP-annotated articles (direct NCBI API)          │   │
+│  │ • Europe PMC via BioMCP (federated search)                    │   │
 │  │ • PubMed MEDLINE enrichment (title, journal, pub type)        │   │
 │  │ • Classify: case reports / functional studies / reviews        │   │
-│  │ • Related genes + chemicals from co-occurrence                │   │
 │  │                                                               │   │
 │  │ Supports: PS3 (functional studies), PS4 (case reports)        │   │
 │  └───────────────────────────────────┬───────────────────────────┘   │
 │                                       │                              │
 │  ┌────────────────────────────────────▼──────────────────────────┐   │
-│  │ 6-7. ALPHAFOLD + TCGA AGENTS (stubs — future phases)         │   │
+│  │ 6. PROTEIN STRUCTURE AGENT (BioMCP)                           │   │
+│  │                                                               │   │
+│  │ • UniProt protein info (function, domains, InterPro)          │   │
+│  │ • PDB structures (experimental 3D)                            │   │
+│  │ • AlphaFold predicted structure links                         │   │
 │  └────────────────────────────────────┬──────────────────────────┘   │
 │                                       │                              │
 │  ┌────────────────────────────────────▼──────────────────────────┐   │
-│  │ 8. ACMG CLASSIFIER (Claude claude-sonnet-4-5)                │   │
+│  │ 7. CLINICAL EVIDENCE AGENT (BioMCP)                           │   │
+│  │                                                               │   │
+│  │ • CIViC: clinical evidence items + assertions                 │   │
+│  │ • ClinGen: gene-disease validity + dosage sensitivity         │   │
+│  │ • GWAS Catalog: SNP-trait associations                        │   │
+│  └────────────────────────────────────┬──────────────────────────┘   │
+│                                       │                              │
+│  ┌────────────────────────────────────▼──────────────────────────┐   │
+│  │ 8. PATHWAY & DRUGGABILITY AGENT (BioMCP)                      │   │
+│  │                                                               │   │
+│  │ • Reactome pathways                                           │   │
+│  │ • DGIdb druggability categories + drug interactions            │   │
+│  └────────────────────────────────────┬──────────────────────────┘   │
+│                                       │                              │
+│  ┌────────────────────────────────────▼──────────────────────────┐   │
+│  │ 9. ACMG CLASSIFIER (Claude claude-sonnet-4-5)                │   │
 │  │                                                               │   │
 │  │ • Receives ALL evidence from prior nodes                      │   │
 │  │ • Structured prompt with pre-computed criteria flags           │   │
@@ -116,8 +146,9 @@ The application uses a **LangGraph StateGraph** with 8 sequential nodes. Each no
 
 ```
 START → input_parser → supervisor ─┬─→ clinvar_agent → gnomad_agent
-                                    │    → pubmed_agent → alphafold_agent (stub)
-                                    │    → tcga_agent (stub) → acmg_classifier → END
+                                    │    → pubmed_agent → alphafold_agent
+                                    │    → tcga_agent → pathway_agent
+                                    │    → acmg_classifier → END
                                     │
                                     └─→ END  (on parse error)
 ```
@@ -128,16 +159,58 @@ START → input_parser → supervisor ─┬─→ clinvar_agent → gnomad_agen
 
 | Source | API | Data Retrieved | ACMG Criteria | Fallback if Unavailable |
 |--------|-----|---------------|---------------|------------------------|
-| **Ensembl VEP** | REST `/vep/homo_sapiens/hgvs/` | Transcript consequences, exon position, amino acid change, impact, protein position | PVS1 (exon assessment) | Tries up to 5 NM_ transcripts from ClinVar counts + Ensembl canonical. If all VEP calls fail, proceeds without transcript annotation — PVS1 cannot be assessed, classification relies on remaining criteria. Warning shown in UI. |
-| **Ensembl Xrefs** | REST `/xrefs/id/`, `/xrefs/symbol/` | NM_ ↔ ENST transcript mapping | Transcript resolution | If xrefs API fails for a transcript, NM_ field left empty. Transcript shown as ENST-only in dropdown. ClinVar pathogenic counts used as primary NM_ source instead. |
-| **NCBI ClinVar** | Entrez esearch + esummary | Clinical significance, star rating, submitters, rsID, condition | PS1, PP5, BP6 | Tries 4-8 ranked queries with HGVS validation. If primary query returns wrong variant (position/type mismatch), rejected and next query tried. If all queries fail: `clinvar_error` set, PS1/PP5/BP6 marked "not evaluable" in classifier prompt, classification proceeds without ClinVar evidence. |
-| **NCBI Gene** | Entrez esearch + esummary | Gene aliases, full name, pathogenic submission counts per NM_ | Transcript ranking | If Gene API fails: aliases/full_name left empty (cosmetic only). If pathogenic counts fail: no "Most Reported" flag on transcripts — ranking falls back to MANE/Canonical only. |
-| **gnomAD v3.1.2 / v2.1.1** | GraphQL API | Allele frequencies (3 cohorts: overall, non-cancer, controls), per-population breakdown, homozygotes | BA1, BS1, PM2 | Tries: coordinate-based query → rsID query → variant_search (for multi-allelic rsIDs). If variant not found: PM2 set to MET (absent = rare). If API errors: warning added, frequency criteria skipped entirely, classifier told "gnomAD not available." Cohort fallback: controls → non-cancer → overall. |
-| **MyVariant.info** | REST API | dbNSFP scores (REVEL, CADD, MetaRNN, BayesDel, AlphaMissense, SIFT, PolyPhen2), conservation (phyloP, phastCons, GERP++) | PP3, BP4 | If liftover to hg19 fails: tries rsID-based query. If MyVariant returns no data (common for indels): PP3/BP4 marked "not evaluable — no in silico scores for this variant type." Consensus shows "Uncertain." |
-| **gnomAD Gene Constraint** | GraphQL API | Missense Z-score, o/e ratio, pLI, LOEUF | PM1 | If constraint API fails: PM1 can still be assessed from domain overlap alone (downgraded to Supporting). If both constraint and UniProt fail: PM1 marked "not evaluable." |
-| **UniProt** | REST API | Functional domains (Domain, Zinc finger, DNA binding, Motif), repeat regions, protein length | PM1, PM4, BP3 | If UniProt API fails: domain list empty, PM1 limited to constraint-only assessment (not met without domain). PM4/BP3 default to "not evaluable — no repeat region data." |
-| **NCBI LitVar** | REST API | Publication count, disease associations, related entities, PubMed metadata enrichment | PS3, PS4 | If no rsID available (ClinVar didn't return one): LitVar skipped entirely, PS3/PS4 marked "not evaluable — no rsID." If LitVar returns no data: same. If PubMed enrichment fails: publication count still available from LitVar entity, but pub_type classification unavailable. |
-| **Claude claude-sonnet-4-5** | LangChain / Anthropic API | ACMG criteria synthesis, combining rules, clinical reasoning | Final classification | If LLM call fails (auth error, timeout, rate limit): retried once with explicit JSON instruction. If retry fails: defaults to VUS with reasoning "ACMG classification failed: {error}. Defaulting to VUS." If JSON parse fails: retried with "respond only with valid JSON" prompt. |
+| **Ensembl VEP** | REST `/vep/homo_sapiens/hgvs/` | Transcript consequences, exon position, amino acid change, impact, protein position | PVS1 (exon assessment) | Tries up to 5 NM_ transcripts from ClinVar counts + Ensembl canonical. If all VEP calls fail, proceeds without transcript annotation — PVS1 cannot be assessed. |
+| **Ensembl Xrefs** | REST `/xrefs/id/`, `/xrefs/symbol/` | NM_ ↔ ENST transcript mapping | Transcript resolution | If xrefs API fails, NM_ field left empty. ClinVar pathogenic counts used as primary NM_ source. |
+| **NCBI ClinVar** | Entrez esearch + esummary | Clinical significance, star rating, submitters, rsID, condition | PS1, PP5, BP6 | Tries 4-8 ranked queries with HGVS validation. If all fail: PS1/PP5/BP6 "not evaluable." |
+| **NCBI Gene** | Entrez esearch + esummary | Gene aliases, full name, pathogenic submission counts per NM_ | Transcript ranking | If Gene API fails: ranking falls back to MANE/Canonical only. |
+| **gnomAD v4.1.0 + v3.1.2 / v2.1.1** | GraphQL API | Allele frequencies (4 cohorts GRCh38 / 3 cohorts GRCh37), per-population breakdown, homozygotes | BA1, BS1, PM2 | Tries: coordinate-based query → rsID query → variant_search. Absent variant = PM2 met. Cohort fallback: controls → non-cancer → overall → v4. |
+| **MyVariant.info** | REST API | dbNSFP scores (REVEL, CADD, MetaRNN, BayesDel, AlphaMissense, SIFT, PolyPhen2), conservation (phyloP, phastCons, GERP++) | PP3, BP4 | If no data (common for indels): PP3/BP4 "not evaluable." |
+| **gnomAD Gene Constraint** | GraphQL API | Missense Z-score, o/e ratio, pLI, LOEUF | PM1 | If fails: PM1 assessed from domain overlap alone (Supporting). |
+| **UniProt** | REST API | Functional domains, repeat regions, protein length | PM1, PM4, BP3 | If fails: PM1 limited to constraint-only. PM4/BP3 "not evaluable." |
+| **NCBI LitVar** | REST API | Publication count, disease associations, PubMed metadata | PS3, PS4 | If no rsID: LitVar skipped, PS3/PS4 "not evaluable." |
+| **PubTator3** | REST API (direct) | NLP-annotated articles, variant/disease/gene entities, relevance scores | PS3, PS4 | If fails: LitVar results still used. |
+| **Europe PMC** | BioMCP CLI | Federated literature search, citation counts | PS3, PS4 | If fails: LitVar/PubTator3 results still used. |
+| **CIViC** | BioMCP CLI + GraphQL | Clinical evidence items, assertions, therapies | Clinical context | If fails: classification proceeds without CIViC. |
+| **ClinGen** | BioMCP CLI | Gene-disease validity, haploinsufficiency, triplosensitivity | Clinical context | If fails: classification proceeds without ClinGen. |
+| **GWAS Catalog** | BioMCP CLI | SNP-trait associations, p-values, effect sizes | Clinical context | If fails: classification proceeds without GWAS. |
+| **Reactome** | BioMCP CLI | Biological pathways for gene | Pathway context | If fails: pathways section empty. |
+| **DGIdb** | BioMCP CLI | Druggability categories, drug interactions | Druggability context | If fails: druggability section empty. |
+| **UniProt (BioMCP)** | BioMCP CLI | Protein function, InterPro domains, PDB structures | Structural context | If fails: structure tab empty. |
+| **Claude claude-sonnet-4-5** | LangChain / Anthropic API | ACMG criteria synthesis, combining rules, clinical reasoning | Final classification | If fails: retried once. If retry fails: defaults to VUS. |
+
+---
+
+## gnomAD Cohort Configuration
+
+### GRCh38 (4 cohorts, ordered)
+
+| # | Dataset | Key | Label | Samples |
+|---|---------|-----|-------|---------|
+| 1 | `gnomad_r4` | `v4_overall` | gnomAD v4.1.0 | 807,162 |
+| 2 | `gnomad_r3` | `v3_overall` | gnomAD v3.1.2 genomes | 76,156 |
+| 3 | `gnomad_r3_non_cancer` | `v3_non_cancer` | gnomAD v3.1.2 non-cancer | 74,023 |
+| 4 | `gnomad_r3_controls_and_biobanks` | `v3_controls` | gnomAD v3.1.2 controls | 16,465 |
+
+### GRCh37 (3 cohorts, ordered)
+
+| # | Dataset | Key | Label | Samples |
+|---|---------|-----|-------|---------|
+| 1 | `gnomad_r2_1` | `overall` | gnomAD v2.1.1 | 141,456 |
+| 2 | `gnomad_r2_1_non_cancer` | `non_cancer` | gnomAD v2.1.1 non-cancer | 134,187 |
+| 3 | `gnomad_r2_1_controls` | `controls` | gnomAD v2.1.1 controls | 60,146 |
+
+### Frequency Criteria Priority (controls-first)
+
+For BA1/BS1/PM2 evaluation AND Fisher's test reference population:
+
+- **GRCh38:** `v3_controls` → `v3_non_cancer` → `v3_overall` → `v4_overall`
+- **GRCh37:** `controls` → `non_cancer` → `overall`
+
+The UI explicitly labels which cohort was selected: *"Using **gnomAD v3.1.2 controls** as reference population"*
+
+### Absent variant handling
+
+Every cohort always gets a row in the display table. If the variant is not found in a cohort: `{available: False, global_af: None}` is shown as "Not Available" rather than being silently omitted.
 
 ---
 
@@ -241,38 +314,31 @@ START → input_parser → supervisor ─┬─→ clinvar_agent → gnomad_agen
 ### Frequency Criteria: Cohort Selection Logic
 
 ```
-Priority for BA1 / BS1 / PM2 evaluation:
+Priority for BA1 / BS1 / PM2 evaluation (defined in FREQ_PRIORITY):
 
-1. gnomAD controls/biobanks (GRCh38: v3.1.2, GRCh37: v2.1.1 controls)
-2. gnomAD non-cancer (if controls unavailable or variant not found)
-3. gnomAD overall (if neither above available)
-4. gnomAD v4 / v2.1.1 primary dataset (if all above fail)
+GRCh38: v3_controls → v3_non_cancer → v3_overall → v4_overall
+GRCh37: controls → non_cancer → overall
 
 Fallback chain example (CHEK2 c.1100delC on GRCh37):
   → Try v2.1.1 controls: found, global AF = 0.002368 ✓ → use this
-  → Skip non-cancer (controls available)
+  → UI shows: "Using gnomAD v2.1.1 controls (60K) as reference"
 
 Fallback chain example (variant not in controls):
-  → Try controls: variant not found
+  → Try controls: variant not found (available: false)
   → Try non-cancer: found, global AF = 0.000045 ✓ → use this
+  → UI shows: "Using gnomAD v3.1.2 non-cancer (74K) as reference"
 
 Fallback chain example (gnomAD API down):
-  → Try controls: API error
-  → Try non-cancer: API error
-  → Try overall: API error
-  → Result: frequency criteria "not evaluable — gnomAD query failed"
-  → BA1 = not evaluable, BS1 = not evaluable, PM2 = not evaluable
+  → All cohorts fail → frequency criteria "not evaluable"
   → Warning shown in UI
 
 Within each cohort:
 - Use GLOBAL allele frequency only
-- Do NOT use per-population max AF (avoids founder effects, e.g., Finnish)
+- Do NOT use per-population max AF (avoids founder effects)
 
-The UI explicitly states which cohort and AF value was used:
-  "evaluated on controls global AF = 0.002368"
-
-Case-control analysis (Fisher's / GLM) also uses the controls cohort
-by default. The UI shows: "Control cohort: gnomAD v2.1.1 (controls)"
+Case-control analysis (Fisher's / GLM) uses the same priority.
+The UI explicitly labels: "Using gnomAD v3.1.2 controls as reference
+population for Fisher's test"
 ```
 
 ### ACMG Combining Rules
@@ -450,16 +516,40 @@ LitVar query: rs80357906
     └── Chemicals: imidazole mustard (17 co-occurrences)
 ```
 
-#### Step 6-7: AlphaFold + TCGA (Stubs)
+#### Step 6: Protein Structure Agent (BioMCP)
 
 ```
-Both return: None (not yet implemented)
-Warnings added:
-├── "Structural data not available — PM1 cannot be assessed from structural data"
-└── "TCGA data not available — somatic evidence cannot be assessed"
+BioMCP queries:
+├── UniProt protein info: P38398 (BRCA1_HUMAN)
+│   ├── Function: E3 ubiquitin ligase, DNA damage repair...
+│   ├── Length: 1863 aa
+│   ├── InterPro domains: 5 domains
+│   └── PDB structures: 52 experimental structures
+└── AlphaFold: structure link available
 ```
 
-#### Step 8: ACMG Classifier (Claude claude-sonnet-4-5)
+#### Step 7: Clinical Evidence Agent (BioMCP)
+
+```
+BioMCP queries:
+├── CIViC: evidence items for BRCA1 variants
+│   ├── Predictive evidence (therapies: olaparib, etc.)
+│   └── Assertions with AMP levels
+├── ClinGen:
+│   ├── Gene-disease validity: Definitive for breast cancer
+│   └── Haploinsufficiency: Sufficient evidence
+└── GWAS Catalog: SNP-trait associations (if rsID found)
+```
+
+#### Step 8: Pathway & Druggability Agent (BioMCP)
+
+```
+BioMCP queries:
+├── Reactome: 15+ pathways (DNA repair, cell cycle, etc.)
+└── DGIdb: druggability categories + PARP inhibitor interactions
+```
+
+#### Step 9: ACMG Classifier (Claude claude-sonnet-4-5)
 
 ```
 Evidence prompt sent to Claude includes:
@@ -575,29 +665,65 @@ ACMG combining:
 
 ---
 
+## UI Design
+
+### Layout Structure (top to bottom)
+
+1. **Header**: Pac-man logo SVG + "PathoMAN 2.0" title + subtitle
+2. **Input bar**: Gene+HGVS or Coordinates input, genome build selector, Look Up / Classify buttons
+3. **Transcript selector**: Gene info, ranked transcript dropdown, annotation bar, PVS1 caveats
+4. **Pac-man animation**: During processing — SVG pac-man eats through labeled pipeline dots
+5. **Classification hero banner**: Large colored banner (red=Pathogenic, orange=Likely Path, gold=VUS, green=Benign) with confidence + reasoning
+6. **ACMG criteria pills**: Colored pill bubbles — red for pathogenic-met, green for benign-met, gray for not-met — with hover tooltips showing justification text
+7. **Tabbed evidence** (7 tabs):
+
+| Tab | Contents | Layout |
+|-----|----------|--------|
+| **Frequencies** | gnomAD cohort table (all 4/3), predictors, conservation, gene constraint, domains | 2 columns |
+| **ClinVar** | ClinVar record | 2 columns |
+| **Literature** | LitVar + PubTator3 + Europe PMC | 2 columns + expander |
+| **Structure** | UniProt function, InterPro, PDB | 2 columns |
+| **Public Datasets** | GWAS Catalog, ClinGen, CIViC, TCGA (coming soon) | Stacked + 2 columns |
+| **Pathways** | Reactome + DGIdb | Side by side |
+| **Case-Control** | Fisher's form + results + forest plot | Interactive form |
+
+8. **Footer**: Warnings expander, disclaimer, debug JSON expander
+
+### Auto-transcript Resolution
+
+If the user clicks "Classify Variant" without first clicking "Look Up Transcripts", the pipeline automatically resolves transcripts (runs `input_parser_node` inline) and selects the top-ranked transcript (Most Reported Pathogenic > MANE Select > Canonical).
+
+---
+
 ## Project Structure
 
 ```
-clinvar-acmg-agent/
-├── app.py                          Streamlit UI
+PathoMAN2.0/
+├── app.py                          Streamlit UI (tabbed layout + pac-man animation)
+├── assets/
+│   ├── pathoman_logo.svg           Logo for README / GitHub
+│   └── pacman_pipeline.svg         Pipeline animation for README
 ├── graph/
-│   ├── graph.py                    LangGraph StateGraph definition
+│   ├── graph.py                    LangGraph StateGraph (9 nodes)
 │   ├── state.py                    VariantState TypedDict
 │   └── supervisor.py               Router (pure Python, no LLM)
 ├── agents/
 │   ├── input_parser.py             Node 1: VEP + transcript resolution
-│   ├── clinvar_agent.py            Node 2: ClinVar query + HGVS validation
-│   ├── gnomad_agent.py             Node 3: gnomAD + dbNSFP + constraint + domains
-│   ├── pubmed_agent.py             Node 4: LitVar + PubMed enrichment
-│   ├── alphafold_agent.py          Node 5: stub
-│   ├── tcga_agent.py               Node 6: stub
-│   └── acmg_classifier.py         Node 7: Claude LLM classification
+│   ├── clinvar_agent.py            Node 3: ClinVar query + HGVS validation
+│   ├── gnomad_agent.py             Node 4: gnomAD (4 cohorts) + dbNSFP + constraint + domains
+│   ├── pubmed_agent.py             Node 5: LitVar + PubTator3 + BioMCP literature
+│   ├── alphafold_agent.py          Node 6: Protein structure (BioMCP)
+│   ├── tcga_agent.py               Node 7: Clinical evidence (CIViC/ClinGen/GWAS via BioMCP)
+│   ├── pathway_agent.py            Node 8: Pathways + Druggability (BioMCP)
+│   └── acmg_classifier.py         Node 9: Claude LLM classification
 ├── tools/
 │   ├── ensembl.py                  Ensembl VEP, xrefs, gene lookup
 │   ├── entrez.py                   NCBI ClinVar, Gene
 │   ├── gnomad_graphql.py           gnomAD v4/v3/v2 GraphQL + multi-dataset
 │   ├── myvariant.py                MyVariant.info (dbNSFP, CADD, conservation)
 │   ├── litvar.py                   NCBI LitVar + PubMed MEDLINE enrichment
+│   ├── pubtator3.py                NCBI PubTator3 NLP article search
+│   ├── biomcp.py                   BioMCP CLI wrapper (UniProt, CIViC, ClinGen, etc.)
 │   ├── gene_constraint.py          gnomAD constraint + UniProt domains + PM1/PM4/BP3
 │   ├── vcf_normalize.py            VCF left-alignment against reference
 │   ├── variant_utils.py            HGVS parsing
@@ -672,14 +798,14 @@ streamlit run app.py
 
 1. **14 of 28 criteria**: PS2 (de novo), PM3 (trans with pathogenic), PM6 (de novo unconfirmed), PP1 (co-segregation), PP2 (missense in gene with low benign rate), PP4 (phenotype specific), BS2 (observed in healthy adult), BS3 (functional benign), BS4 (non-segregation), BP1 (missense in truncating gene), BP2 (observed in trans/cis), BP5 (alternate mechanism), BP7 (synonymous) are NOT evaluated.
 
-2. **No structural data**: AlphaFold/PDB integration is stubbed out. PM1 domain assessment relies on UniProt annotations only.
+2. **TCGA germline/somatic prevalence**: Planned but not yet implemented. UI shows "coming soon" placeholder.
 
-3. **No somatic data**: TCGA integration is stubbed out.
+3. **Literature classification is heuristic**: LitVar + PubMed pub_type classification of "functional study" vs "case report" is approximate.
 
-4. **Literature classification is heuristic**: LitVar + PubMed pub_type classification of "functional study" vs "case report" is approximate.
+4. **LLM variability**: Final classification relies on Claude which may vary between runs (mitigated by temperature=0).
 
-5. **LLM variability**: Final classification relies on Claude which may vary between runs (mitigated by temperature=0).
+5. **Ensembl API latency**: NM_↔ENST xrefs mapping requires per-transcript API calls (~0.5s each), making transcript resolution slow for genes with many isoforms.
 
-6. **Ensembl API latency**: NM_↔ENST xrefs mapping requires per-transcript API calls (~0.5s each), making transcript resolution slow for genes with many isoforms.
+6. **BioMCP CLI dependency**: Protein structure, clinical evidence, and pathway agents require `biomcp-cli` to be installed and functional.
 
 7. **Not validated for clinical use**: This tool has not undergone analytical or clinical validation.

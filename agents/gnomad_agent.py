@@ -14,6 +14,7 @@ from typing import Any, Optional
 from graph.state import VariantState
 from tools.gnomad_graphql import (
     GNOMAD_DATASETS,
+    _default_dataset,
     query_gnomad_by_rsid,
     query_gnomad_variant,
 )
@@ -26,6 +27,34 @@ logger = logging.getLogger(__name__)
 BA1_THRESHOLD = 0.05      # >5% in any population → stand-alone benign
 BS1_THRESHOLD = 0.01      # >1% → strong benign (for rare disease genes)
 PM2_THRESHOLD = 0.0001    # <0.01% or absent → supporting pathogenic
+
+# Ordered cohort configurations per genome build
+COHORT_CONFIGS = {
+    "GRCh38": [
+        {"key": "v4_overall", "dataset": "gnomad_r4",
+         "label": "gnomAD v4.1.0 (807K samples)"},
+        {"key": "v3_overall", "dataset": "gnomad_r3",
+         "label": "gnomAD v3.1.2 genomes (76K)"},
+        {"key": "v3_non_cancer", "dataset": "gnomad_r3_non_cancer",
+         "label": "gnomAD v3.1.2 non-cancer (74K)"},
+        {"key": "v3_controls", "dataset": "gnomad_r3_controls_and_biobanks",
+         "label": "gnomAD v3.1.2 controls (16.5K)"},
+    ],
+    "GRCh37": [
+        {"key": "overall", "dataset": "gnomad_r2_1",
+         "label": "gnomAD v2.1.1 (141K)"},
+        {"key": "non_cancer", "dataset": "gnomad_r2_1_non_cancer",
+         "label": "gnomAD v2.1.1 non-cancer (134K)"},
+        {"key": "controls", "dataset": "gnomad_r2_1_controls",
+         "label": "gnomAD v2.1.1 controls (60K)"},
+    ],
+}
+
+# Priority order for selecting reference cohort for ACMG freq criteria & Fisher's
+FREQ_PRIORITY = {
+    "GRCh38": ["v3_controls", "v3_non_cancer", "v3_overall", "v4_overall"],
+    "GRCh37": ["controls", "non_cancer", "overall"],
+}
 
 
 def _extract_coordinates_from_hgvs(hgvs: str) -> Optional[tuple[str, int, str, str]]:
@@ -334,37 +363,80 @@ def gnomad_agent_node(state: VariantState) -> dict[str, Any]:
         logger.warning("gnomAD query failed: %s", e)
         warnings.append(f"gnomAD query failed: {str(e)}")
 
-    # ---- Step 1b: Query non-cancer and controls datasets ----
-    # GRCh38: gnomAD v3.1.2 overall, non-cancer, controls/biobanks (genomes)
-    # GRCh37: gnomAD v2.1.1 overall, non-cancer, controls (exomes+genomes)
-    cohort_datasets = {
-        "GRCh38": {
-            "overall": "gnomad_r3",
-            "non_cancer": "gnomad_r3_non_cancer",
-            "controls": "gnomad_r3_controls_and_biobanks",
-        },
-        "GRCh37": {
-            "overall": "gnomad_r2_1",
-            "non_cancer": "gnomad_r2_1_non_cancer",
-            "controls": "gnomad_r2_1_controls",
-        },
-    }.get(genome_build, {})
+    # ---- Step 1b: Query all cohort datasets ----
+    # Each build has an ordered list of cohorts to query (COHORT_CONFIGS).
+    # The default dataset result (gnomad_data) is reused if its dataset matches.
+    configs = COHORT_CONFIGS.get(genome_build, [])
+    default_ds = _default_dataset(genome_build)
+    cohort_results: list[dict[str, Any]] = []
+    cohort_data: dict[str, Any] = {}  # keyed by config key for backward compat
 
-    cohort_data: dict[str, Any] = {"overall": gnomad_data}
+    for cfg in configs:
+        ds = cfg["dataset"]
+        key = cfg["key"]
+        label = cfg["label"]
 
-    for cohort_name in ["non_cancer", "controls"]:
-        ds = cohort_datasets.get(cohort_name)
-        if not ds or not rsid:
-            cohort_data[cohort_name] = None
+        # Reuse the initial gnomad_data if it was from this dataset
+        if ds == default_ds and gnomad_data:
+            cohort_entry = {
+                "key": key, "dataset": ds, "label": label,
+                "available": True, "global_af": gnomad_data.get("global_af"),
+                "exome": gnomad_data.get("exome"),
+                "genome": gnomad_data.get("genome"),
+                "populations": gnomad_data.get("populations", {}),
+                "hom": gnomad_data.get("hom", 0),
+            }
+            cohort_results.append(cohort_entry)
+            cohort_data[key] = cohort_entry
+            logger.info("gnomAD %s: reused initial lookup, AF=%s", key, gnomad_data.get("global_af"))
             continue
+
+        # Query this cohort (prefer variant ID, fall back to rsID)
+        coh_result = None
         try:
-            result = query_gnomad_by_rsid(rsid, genome_build, ds)
-            cohort_data[cohort_name] = result
-            if result:
-                logger.info("gnomAD %s: AF=%s", cohort_name, result.get("global_af"))
+            # Try by variant ID first
+            if gnomad_variant_id:
+                parts = gnomad_variant_id.split("-")
+                if len(parts) == 4:
+                    coh_result = query_gnomad_variant(
+                        parts[0], int(parts[1]), parts[2], parts[3],
+                        genome_build, ds,
+                    )
+            # Fall back to rsID
+            if not coh_result and rsid:
+                coh_result = query_gnomad_by_rsid(rsid, genome_build, ds)
         except Exception as e:
-            logger.warning("gnomAD %s query failed: %s", cohort_name, e)
-            cohort_data[cohort_name] = None
+            logger.warning("gnomAD %s query failed: %s", key, e)
+
+        if coh_result:
+            cohort_entry = {
+                "key": key, "dataset": ds, "label": label,
+                "available": True, "global_af": coh_result.get("global_af"),
+                "exome": coh_result.get("exome"),
+                "genome": coh_result.get("genome"),
+                "populations": coh_result.get("populations", {}),
+                "hom": coh_result.get("hom", 0),
+            }
+            logger.info("gnomAD %s: AF=%s", key, coh_result.get("global_af"))
+        else:
+            cohort_entry = {
+                "key": key, "dataset": ds, "label": label,
+                "available": False, "global_af": None,
+                "exome": None, "genome": None,
+                "populations": {}, "hom": 0,
+            }
+            logger.info("gnomAD %s: variant not found", key)
+
+        cohort_results.append(cohort_entry)
+        cohort_data[key] = cohort_entry
+
+    # Legacy backward-compat keys (overall, non_cancer, controls)
+    # Map old keys to new cohort data
+    if genome_build == "GRCh38":
+        cohort_data["overall"] = cohort_data.get("v3_overall")
+        cohort_data["non_cancer"] = cohort_data.get("v3_non_cancer")
+        cohort_data["controls"] = cohort_data.get("v3_controls")
+    # GRCh37 keys already match (overall, non_cancer, controls)
 
     # ---- Step 2: Query MyVariant.info for dbNSFP + CADD ----
     myvariant_data = None
@@ -404,21 +476,22 @@ def gnomad_agent_node(state: VariantState) -> dict[str, Any]:
             }
 
     # Use controls global AF for ACMG frequency criteria (BA1, BS1, PM2)
-    # Priority: controls > non-cancer > overall
-    # Within each: use exome AF if available, else genome AF, else global AF
+    # Priority defined in FREQ_PRIORITY per build
     freq_source = None
     freq_label = ""
+    freq_key_used = ""
 
-    for cohort_name, label in [("controls", "controls"), ("non_cancer", "non-cancer"), ("overall", "overall")]:
-        cd = cohort_data.get(cohort_name)
-        if cd and cd.get("global_af") is not None:
+    for prio_key in FREQ_PRIORITY.get(genome_build, []):
+        cd = cohort_data.get(prio_key)
+        if cd and cd.get("available") and cd.get("global_af") is not None:
             freq_source = cd
-            freq_label = label
+            freq_label = cd.get("label", prio_key)
+            freq_key_used = prio_key
             break
 
     if freq_source is None and gnomad_data:
         freq_source = gnomad_data
-        freq_label = "overall (v4)"
+        freq_label = "gnomAD overall"
 
     freq_criteria = _compute_frequency_criteria(freq_source, cohort_label=freq_label)
 
@@ -489,22 +562,6 @@ def gnomad_agent_node(state: VariantState) -> dict[str, Any]:
     )
 
     # ---- Step 4: Build the gnomad state dict ----
-    from tools.gnomad_graphql import _default_dataset, GNOMAD_DATASETS
-
-    def _cohort_block(data: Any) -> dict[str, Any]:
-        """Extract a standardized cohort block from gnomAD query result."""
-        if not data:
-            return {"available": False}
-        return {
-            "available": True,
-            "global_af": data.get("global_af"),
-            "exome": data.get("exome"),
-            "genome": data.get("genome"),
-            "populations": data.get("populations", {}),
-            "hom": data.get("hom", 0),
-            "dataset": data.get("dataset", ""),
-            "dataset_label": GNOMAD_DATASETS.get(data.get("dataset", ""), {}).get("label", ""),
-        }
 
     used_dataset = (gnomad_data or {}).get("dataset") or _default_dataset(genome_build)
 
@@ -519,11 +576,16 @@ def gnomad_agent_node(state: VariantState) -> dict[str, Any]:
         "alt": alt_allele,
         "gnomad_variant_id": gnomad_variant_id or ((gnomad_data or {}).get("variant_id")),
         "variant_in_gnomad": gnomad_data is not None,
-        # Three cohorts side by side
-        "overall": _cohort_block(cohort_data.get("overall")),
-        "non_cancer": _cohort_block(cohort_data.get("non_cancer")),
-        "controls": _cohort_block(cohort_data.get("controls")),
-        # Keep allele_frequency for backward compat (points to overall)
+        # Ordered cohort list (new structure)
+        "cohorts": cohort_results,
+        # Legacy cohort keys (backward compat with acmg_classifier / app.py)
+        "overall": cohort_data.get("overall") or {"available": False},
+        "non_cancer": cohort_data.get("non_cancer") or {"available": False},
+        "controls": cohort_data.get("controls") or {"available": False},
+        # Freq criteria reference cohort label
+        "freq_cohort_label": freq_label,
+        "freq_cohort_key": freq_key_used,
+        # Keep allele_frequency for backward compat (points to default dataset)
         "allele_frequency": {
             "global_af": (gnomad_data or {}).get("global_af"),
             "exome": (gnomad_data or {}).get("exome"),

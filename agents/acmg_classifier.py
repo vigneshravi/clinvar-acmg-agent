@@ -362,6 +362,43 @@ def _build_evidence_prompt(state: VariantState) -> str:
             lit_lines.append("- Related genes in literature: " +
                              ", ".join(g["name"] for g in related_genes[:5]))
 
+        # PubTator3 articles (direct API — NLP annotated)
+        pubtator_articles = pubmed.get("pubtator3_articles", [])
+        if pubtator_articles:
+            lit_lines.append(f"\n### PubTator3 Articles (NLP-annotated) — {len(pubtator_articles)} results:")
+            for art in pubtator_articles[:10]:
+                lit_lines.append(
+                    f"  - [{art.get('date', '')[:10]}] PMID:{art.get('pmid', '')} "
+                    f"(score={art.get('score', 0):.0f}) "
+                    f"— {art.get('title', '')} ({art.get('journal', '')})"
+                )
+
+        # PubTator3 NLP annotations (variants, diseases, genes found in articles)
+        pubtator_annots = pubmed.get("pubtator3_annotations", [])
+        if pubtator_annots:
+            all_variants = set()
+            all_diseases = set()
+            for ann_article in pubtator_annots:
+                for ann in ann_article.get("annotations", []):
+                    if ann.get("type") == "Variant":
+                        all_variants.add(ann.get("text", ""))
+                    elif ann.get("type") == "Disease":
+                        all_diseases.add(ann.get("text", ""))
+            if all_variants:
+                lit_lines.append(f"- PubTator3 mined variants: {', '.join(sorted(all_variants)[:10])}")
+            if all_diseases:
+                lit_lines.append(f"- PubTator3 mined diseases: {', '.join(sorted(all_diseases)[:10])}")
+
+        # BioMCP Europe PMC articles
+        biomcp_articles = pubmed.get("biomcp_articles", [])
+        if biomcp_articles:
+            lit_lines.append(f"\n### Europe PMC Articles (BioMCP) — {len(biomcp_articles)} results:")
+            for art in biomcp_articles[:10]:
+                lit_lines.append(
+                    f"  - [{art.get('date', '')}] PMID:{art.get('pmid', '')} "
+                    f"— {art.get('title', '')} ({art.get('journal', '')})"
+                )
+
         parts.append("\n".join(lit_lines))
     else:
         parts.append(
@@ -370,29 +407,117 @@ def _build_evidence_prompt(state: VariantState) -> str:
             "cannot be fully evaluated from literature."
         )
 
-    # AlphaFold / PDB
-    if state.get("alphafold") or state.get("pdb"):
-        parts.append("## Structural Evidence")
-        if state.get("alphafold"):
-            parts.append(f"AlphaFold: {json.dumps(state['alphafold'], indent=2)}")
-        if state.get("pdb"):
-            parts.append(f"PDB: {json.dumps(state['pdb'], indent=2)}")
+    # Structural Evidence (BioMCP: UniProt + InterPro + PDB)
+    protein_info = state.get("protein_info")
+    if protein_info:
+        se_lines = [
+            "## Structural Evidence (BioMCP: UniProt + InterPro + PDB)",
+            f"- Protein: {protein_info.get('name', 'N/A')} ({protein_info.get('accession', '')})",
+            f"- Length: {protein_info.get('length', 0)} aa",
+        ]
+        func = protein_info.get("function", "")
+        if func:
+            se_lines.append(f"- Function: {func[:500]}")
+        domains = protein_info.get("interpro_domains", [])
+        if domains:
+            se_lines.append(f"- InterPro domains ({len(domains)}):")
+            for d in domains[:10]:
+                se_lines.append(f"  - {d.get('name', '')} ({d.get('accession', '')}) [{d.get('domain_type', '')}]")
+        pdb_count = protein_info.get("pdb_structure_count", 0)
+        pdb_structs = protein_info.get("pdb_structures", [])
+        if pdb_structs:
+            se_lines.append(f"- PDB structures: {pdb_count} total, top: {', '.join(str(s) for s in pdb_structs[:5])}")
+        alphafold_url = protein_info.get("alphafold_url", "")
+        if alphafold_url:
+            se_lines.append(f"- AlphaFold: {alphafold_url}")
+        parts.append("\n".join(se_lines))
     else:
         parts.append(
             "## Structural Evidence\n"
-            "Not available — PM1 (functional domain) cannot be evaluated "
-            "from structural data."
+            "Not available — protein structural data could not be retrieved."
         )
 
-    # TCGA
-    if state.get("tcga_somatic"):
-        parts.append(f"## TCGA Evidence\n{json.dumps(state['tcga_somatic'], indent=2)}")
+    # CIViC Clinical Evidence
+    civic = state.get("civic")
+    if civic:
+        cv_lines = ["## CIViC Clinical Evidence"]
+        cached = civic.get("cached_evidence", [])
+        if cached:
+            cv_lines.append(f"- Evidence items: {len(cached)}")
+            for ev in cached[:15]:
+                therapies = ", ".join(ev.get("therapies", []))
+                therapy_str = f" | Therapies: {therapies}" if therapies else ""
+                cv_lines.append(
+                    f"  - {ev.get('name', '')}: {ev.get('evidence_type', '')} "
+                    f"({ev.get('evidence_level', '')}) — {ev.get('disease', '')}"
+                    f"{therapy_str}"
+                )
+        assertions = civic.get("graphql_assertions", [])
+        if assertions:
+            cv_lines.append(f"- Assertions: {len(assertions)}")
+            for a in assertions:
+                cv_lines.append(
+                    f"  - {a.get('name', '')}: AMP {a.get('amp_level', '')} — "
+                    f"{a.get('disease', '')}"
+                )
+        parts.append("\n".join(cv_lines))
     else:
-        parts.append(
-            "## TCGA Somatic Evidence\n"
-            "Not available — somatic hotspot and biallelic loss evidence "
-            "cannot be evaluated."
-        )
+        parts.append("## CIViC Clinical Evidence\nNot available for this variant.")
+
+    # ClinGen Gene-Disease Validity
+    clingen = state.get("clingen")
+    if clingen:
+        cg_lines = ["## ClinGen Gene-Disease Validity"]
+        validity = clingen.get("validity", [])
+        for v in validity:
+            cg_lines.append(
+                f"- {v.get('disease', '')}: {v.get('classification', '')} "
+                f"(MOI: {v.get('moi', 'N/A')}, reviewed {v.get('review_date', '')})"
+            )
+        haplo = clingen.get("haploinsufficiency", "")
+        triplo = clingen.get("triplosensitivity", "")
+        if haplo:
+            cg_lines.append(f"- Haploinsufficiency: {haplo}")
+        if triplo:
+            cg_lines.append(f"- Triplosensitivity: {triplo}")
+        parts.append("\n".join(cg_lines))
+    else:
+        parts.append("## ClinGen\nNot available for this gene.")
+
+    # GWAS Catalog
+    gwas = state.get("gwas")
+    if gwas:
+        gw_lines = [f"## GWAS Catalog ({len(gwas)} associations)"]
+        for a in gwas[:10]:
+            gw_lines.append(
+                f"- {a.get('trait_name', '')}: p={a.get('p_value', 'N/A')}, "
+                f"effect={a.get('effect_size', 'N/A')} ({a.get('effect_type', '')}), "
+                f"risk allele: {a.get('risk_allele', 'N/A')}"
+            )
+        parts.append("\n".join(gw_lines))
+    else:
+        parts.append("## GWAS Catalog\nNo associations found.")
+
+    # Pathways (Reactome via BioMCP)
+    pathways = state.get("pathways")
+    if pathways:
+        pw_lines = [f"## Reactome Pathways ({len(pathways)})"]
+        for p in pathways[:10]:
+            pw_lines.append(f"- {p.get('name', '')} ({p.get('id', '')})")
+        parts.append("\n".join(pw_lines))
+
+    # Druggability (DGIdb via BioMCP)
+    druggability = state.get("druggability")
+    if druggability:
+        dg_lines = ["## Druggability (DGIdb)"]
+        cats = druggability.get("categories", [])
+        if cats:
+            dg_lines.append(f"- Categories: {', '.join(cats)}")
+        interactions = druggability.get("interactions", [])
+        if interactions:
+            approved = [i for i in interactions if i.get("approved")]
+            dg_lines.append(f"- Drug interactions: {len(interactions)} total, {len(approved)} approved")
+        parts.append("\n".join(dg_lines))
 
     # Instructions
     parts.append(
@@ -439,12 +564,24 @@ def _build_evidence_prompt(state: VariantState) -> str:
         "  Use pre-computed consensus. REVEL>0.75, CADD>25, AlphaMissense>0.564 = damaging\n"
         "- BP4: Multiple computational tools predict no impact (Supporting Benign)\n"
         "  REVEL<0.15, CADD<15 = benign\n\n"
+        "### From CIViC clinical evidence:\n"
+        "- CIViC evidence items with evidence levels A/B support clinical significance.\n"
+        "- Predictive evidence items indicate therapy response/resistance.\n"
+        "- Diagnostic/prognostic evidence strengthens disease association.\n"
+        "- CIViC assertions with AMP TIER_I indicate strong clinical evidence.\n\n"
+        "### From ClinGen gene-disease validity:\n"
+        "- Definitive gene-disease validity supports PVS1 applicability.\n"
+        "- Haploinsufficiency evidence supports LOF mechanism of disease.\n"
+        "- ClinGen classifications strengthen overall confidence.\n\n"
+        "### From GWAS Catalog:\n"
+        "- Significant associations (p < 5e-8) support PS4 when applicable.\n\n"
         "### Rules:\n"
         "- Use the pre-computed ACMG criteria flags (BA1_met, PM2_met, PP3_met, PVS1 strength) "
         "from the evidence sections — do not override them unless you have a specific reason.\n"
         "- For any criterion that cannot be evaluated, set met=false and explain why.\n"
         "- Apply ACMG combining rules to determine final classification.\n"
         "- BA1 alone is sufficient for Benign (Stand-alone).\n"
+        "- Consider CIViC, ClinGen, and structural data as supporting context for your reasoning.\n"
         "\nRespond with ONLY valid JSON."
     )
 

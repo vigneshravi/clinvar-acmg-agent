@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 80" width="360" height="80">
+  <defs>
+    <linearGradient id="pg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FFB300"/>
+      <stop offset="100%" stop-color="#FF8F00"/>
+    </linearGradient>
+  </defs>
+  <!-- Pac-man body -->
+  <path d="M40 8 A32 32 0 1 1 40 72 A32 32 0 1 1 40 8 Z" fill="url(#pg)"/>
+  <!-- Mouth wedge -->
+  <path d="M40 40 L74 20 L74 60 Z" fill="white"/>
+  <!-- Eye -->
+  <circle cx="46" cy="24" r="4.5" fill="#333"/>
+  <circle cx="47.5" cy="22.5" r="1.8" fill="white"/>
+  <!-- AI badge -->
+  <rect x="20" y="4" rx="6" ry="6" width="22" height="14" fill="#7C3AED" opacity="0.85"/>
+  <text x="31" y="15" text-anchor="middle" fill="white" font-size="10" font-weight="bold" font-family="Arial,Helvetica,sans-serif">AI</text>
+  <!-- DNA double-helix trail -->
+  <path d="M3 30 Q9 24 15 30 Q21 36 27 30" stroke="#FF8F00" stroke-width="2" fill="none" opacity="0.5"/>
+  <path d="M3 50 Q9 56 15 50 Q21 44 27 50" stroke="#FF8F00" stroke-width="2" fill="none" opacity="0.5"/>
+  <line x1="9" y1="30" x2="9" y2="50" stroke="#FF8F00" stroke-width="1" opacity="0.3"/>
+  <line x1="15" y1="30" x2="15" y2="50" stroke="#FF8F00" stroke-width="1" opacity="0.3"/>
+  <line x1="21" y1="30" x2="21" y2="50" stroke="#FF8F00" stroke-width="1" opacity="0.3"/>
+  <!-- Title text -->
+  <text x="88" y="38" fill="#1a1a1a" font-size="28" font-weight="700" font-family="Arial,Helvetica,sans-serif">PathoMAN 2.0</text>
+  <text x="88" y="58" fill="#666" font-size="14" font-family="Arial,Helvetica,sans-serif">AI-Powered ACMG Variant Classification</text>
+</svg>
