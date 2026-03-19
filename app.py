@@ -103,7 +103,7 @@ st.markdown(f"""
     {PACMAN_LOGO}
     <div>
         <div style="font-size:1.8rem; font-weight:700; line-height:1.2; color:#1a1a1a;">PathoMAN 2.0</div>
-        <div style="color:#666; font-size:0.9rem;">AI-Powered ACMG Variant Classification &middot; <em>Not for clinical use</em></div>
+        <div style="color:#666; font-size:0.9rem;">Pathogenicity of Mutation Analyzer &mdash; for Clinical Cancer Genomics &middot; <em>Not for clinical use</em></div>
     </div>
 </div>
 """, unsafe_allow_html=True)

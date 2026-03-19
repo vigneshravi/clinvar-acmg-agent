@@ -1,6 +1,7 @@
 ![PathoMAN 2.0](assets/pathoman_logo.svg)
 
 # PathoMAN 2.0
+**Pathogenicity of Mutation Analyzer — for Clinical Cancer Genomics**
 
 An AI-powered genomic variant annotation and classification tool built with LangGraph multi-agent architecture, Streamlit, and Claude (claude-sonnet-4-5). It integrates evidence from **12+ data sources** — ClinVar, gnomAD (v4 + v3 + v2), dbNSFP, UniProt, LitVar, PubTator3, Europe PMC, CIViC, ClinGen, GWAS Catalog, Reactome, and DGIdb — via direct APIs and **BioMCP** to produce ACMG/AMP 2015-compliant variant classifications with full transparency into every decision.
 
