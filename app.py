@@ -419,13 +419,15 @@ if "final_state" in st.session_state:
             else:
                 st.info("Variant **not found** in gnomAD — absent from population controls (supports PM2)")
 
-            # ACMG frequency flags (evaluated on controls AF)
-            acmg_note = " *(based on controls AF)*" if ct_avail else ""
+            # ACMG frequency flags — show which cohort and AF was used
+            freq_cohort = acmg_crit.get("freq_cohort", "controls")
+            freq_af = acmg_crit.get("freq_af_used")
+            freq_af_str = f"{freq_af:.6f}" if freq_af is not None else "N/A"
             st.markdown(
-                f"{'\u2705' if acmg_crit.get('BA1_met') else '\u274C'} **BA1** (AF>5%) &nbsp;&nbsp; "
-                f"{'\u2705' if acmg_crit.get('BS1_met') else '\u274C'} **BS1** (AF>1%) &nbsp;&nbsp; "
-                f"{'\u2705' if acmg_crit.get('PM2_met') else '\u274C'} **PM2** (Absent/rare)"
-                f"{acmg_note}"
+                f"{'\u2705' if acmg_crit.get('BA1_met') else '\u274C'} **BA1** (global AF>5%) &nbsp;&nbsp; "
+                f"{'\u2705' if acmg_crit.get('BS1_met') else '\u274C'} **BS1** (global AF>1%) &nbsp;&nbsp; "
+                f"{'\u2705' if acmg_crit.get('PM2_met') else '\u274C'} **PM2** (global AF<0.01%) &nbsp;&nbsp; "
+                f"*(evaluated on **{freq_cohort}** global AF = {freq_af_str})*"
             )
 
             # In silico predictors

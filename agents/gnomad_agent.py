@@ -41,8 +41,14 @@ def _extract_coordinates_from_hgvs(hgvs: str) -> Optional[tuple[str, int, str, s
 
 def _compute_frequency_criteria(
     gnomad_data: Optional[dict],
+    cohort_label: str = "controls",
 ) -> dict[str, Any]:
-    """Compute ACMG frequency-based criteria from gnomAD data."""
+    """Compute ACMG frequency-based criteria from gnomAD global AF.
+
+    All criteria (BA1, BS1, PM2) are evaluated against the GLOBAL allele
+    frequency of the specified cohort — not per-population max AF.
+    This avoids false positives from founder effects in individual populations.
+    """
     criteria = {
         "BA1_met": False,
         "BA1_detail": "",
@@ -50,43 +56,43 @@ def _compute_frequency_criteria(
         "BS1_detail": "",
         "PM2_met": False,
         "PM2_detail": "",
+        "freq_cohort": cohort_label,
+        "freq_af_used": None,
     }
 
     if gnomad_data is None:
         criteria["PM2_met"] = True
-        criteria["PM2_detail"] = "Variant absent from gnomAD — supports PM2"
+        criteria["PM2_detail"] = f"Variant absent from gnomAD {cohort_label} — supports PM2"
         return criteria
 
+    # Use global AF only — not per-population max
     global_af = gnomad_data.get("global_af") or 0
-    max_pop_af = gnomad_data.get("max_pop_af", 0)
-    max_pop_name = gnomad_data.get("max_pop_name", "")
-    hom = gnomad_data.get("hom", 0)
+    criteria["freq_af_used"] = global_af
 
-    # BA1: AF > 5% in any population
-    check_af = max(global_af, max_pop_af)
-    if check_af > BA1_THRESHOLD:
+    # BA1: Global AF > 5%
+    if global_af > BA1_THRESHOLD:
         criteria["BA1_met"] = True
         criteria["BA1_detail"] = (
-            f"Allele frequency {check_af:.4f} exceeds 5% threshold "
-            f"(max population: {max_pop_name})"
+            f"Global AF {global_af:.6f} in {cohort_label} exceeds 5% threshold"
         )
 
-    # BS1: AF > 1% — greater than expected for rare disease
-    elif check_af > BS1_THRESHOLD:
+    # BS1: Global AF > 1%
+    elif global_af > BS1_THRESHOLD:
         criteria["BS1_met"] = True
         criteria["BS1_detail"] = (
-            f"Allele frequency {check_af:.4f} exceeds 1% threshold "
+            f"Global AF {global_af:.6f} in {cohort_label} exceeds 1% threshold "
             f"for rare disease genes"
         )
 
-    # PM2: Absent or extremely rare in controls
-    if global_af < PM2_THRESHOLD and max_pop_af < PM2_THRESHOLD:
+    # PM2: Global AF < 0.01% or absent
+    if global_af < PM2_THRESHOLD:
         criteria["PM2_met"] = True
         if global_af == 0:
-            criteria["PM2_detail"] = "Variant absent from gnomAD"
+            criteria["PM2_detail"] = f"Variant absent from gnomAD {cohort_label}"
         else:
             criteria["PM2_detail"] = (
-                f"Variant extremely rare in gnomAD (AF={global_af:.6f})"
+                f"Variant extremely rare in gnomAD {cohort_label} "
+                f"(global AF={global_af:.6f})"
             )
 
     return criteria
@@ -397,11 +403,24 @@ def gnomad_agent_node(state: VariantState) -> dict[str, Any]:
                 "populations": af_source.get("populations", {}),
             }
 
-    # Use controls AF for ACMG frequency criteria (BA1, BS1, PM2)
-    # Controls/biobanks is the cleanest population for germline interpretation
-    controls_data = cohort_data.get("controls")
-    freq_source = controls_data if controls_data else af_source
-    freq_criteria = _compute_frequency_criteria(freq_source if freq_source else None)
+    # Use controls global AF for ACMG frequency criteria (BA1, BS1, PM2)
+    # Priority: controls > non-cancer > overall
+    # Within each: use exome AF if available, else genome AF, else global AF
+    freq_source = None
+    freq_label = ""
+
+    for cohort_name, label in [("controls", "controls"), ("non_cancer", "non-cancer"), ("overall", "overall")]:
+        cd = cohort_data.get(cohort_name)
+        if cd and cd.get("global_af") is not None:
+            freq_source = cd
+            freq_label = label
+            break
+
+    if freq_source is None and gnomad_data:
+        freq_source = gnomad_data
+        freq_label = "overall (v4)"
+
+    freq_criteria = _compute_frequency_criteria(freq_source, cohort_label=freq_label)
 
     # In silico consensus
     predictors = {}
