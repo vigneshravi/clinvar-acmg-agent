@@ -33,7 +33,7 @@ def _rank_transcripts(transcripts: list[dict[str, Any]]) -> list[dict[str, Any]]
         if tx.get("is_mane_plus_clinical"):
             score += 4
         if tx.get("is_most_reported_pathogenic"):
-            score += 2
+            score += 3  # Most reported should beat canonical-only
         if tx.get("is_canonical"):
             score += 1
         if tx.get("nm_accession"):
@@ -214,16 +214,24 @@ def input_parser_node(state: VariantState) -> dict[str, Any]:
         logger.warning("Gene alias lookup failed: %s", e)
 
     # ---- Step 5: Get ClinVar pathogenic counts → most reported transcript ----
+    # Match version-agnostic (NM_007194.4 should match NM_007194.3)
+    def _nm_base(nm: str) -> str:
+        """Strip version from NM_ accession: NM_007194.4 → NM_007194"""
+        return nm.split(".")[0] if nm else ""
+
     try:
         path_counts = count_pathogenic_submissions_per_transcript(gene_upper)
         if path_counts:
             top_nm = path_counts.most_common(1)[0][0]
+            top_nm_base = _nm_base(top_nm)
+            matched = False
             for tx in transcripts:
-                if tx.get("nm_accession") == top_nm:
+                if _nm_base(tx.get("nm_accession", "")) == top_nm_base:
                     tx["is_most_reported_pathogenic"] = True
+                    matched = True
                     break
-            else:
-                # top_nm not in VEP results — check if canonical maps to it
+            if not matched:
+                # top_nm not in VEP results — assign to canonical
                 for tx in transcripts:
                     if tx.get("is_canonical") and not tx.get("nm_accession"):
                         tx["nm_accession"] = top_nm
@@ -231,6 +239,16 @@ def input_parser_node(state: VariantState) -> dict[str, Any]:
                         break
     except Exception as e:
         logger.warning("Pathogenic count lookup failed: %s", e)
+
+    # ---- Step 5b: Fix MANE Select label for GRCh37 ----
+    # MANE Select is a GRCh38-only concept. On GRCh37, is_canonical from
+    # Ensembl may point to a different transcript. Relabel as "Canonical"
+    # only, not "MANE Select".
+    if genome_build == "GRCh37":
+        for tx in transcripts:
+            if tx.get("is_mane_select"):
+                tx["is_mane_select"] = False
+                # is_canonical stays True — scoring still gives it a boost
 
     # ---- Step 6: Rank transcripts ----
     transcripts = _rank_transcripts(transcripts)
