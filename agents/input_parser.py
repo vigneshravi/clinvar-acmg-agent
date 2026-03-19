@@ -242,11 +242,12 @@ def input_parser_node(state: VariantState) -> dict[str, Any]:
     updates["selected_transcript"] = sel_id
 
     # ---- Step 8: Set hgvs_on_transcript ----
-    sel_hgvsc = selected.get("hgvsc", "")
-    if sel_hgvsc:
-        updates["hgvs_on_transcript"] = sel_hgvsc
-    elif selected.get("nm_accession") and cdna:
+    # Prefer NM_-based HGVS over ENST for ClinVar compatibility.
+    # VEP returns ENST-based hgvsc, but ClinVar searches work better with NM_.
+    if selected.get("nm_accession") and cdna:
         updates["hgvs_on_transcript"] = f"{selected['nm_accession']}:{cdna}"
+    elif selected.get("hgvsc"):
+        updates["hgvs_on_transcript"] = selected["hgvsc"]
     elif cdna and gene_symbol:
         updates["hgvs_on_transcript"] = f"{gene_symbol} {cdna}"
     else:
