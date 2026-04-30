@@ -205,3 +205,30 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# === PathoMAN 2.0-specific exclusions ===
+# API response cache (regenerated at runtime)
+cache/
+data/cache/
+svi/data/cache/
+
+# FAISS vector indexes (rebuilt from knowledge_base/ on first run)
+data/faiss_index/
+svi/data/faiss_index/
+*.faiss
+*.faiss.pkl
+
+# macOS
+.DS_Store
+
+# Build artifacts
+*.log
+
+# Local dev / test outputs
+test_results/
+tmp/
+
+# Secrets — defense in depth
+*.key
+*_secret*
+secrets.json

@@ -7,6 +7,32 @@ An AI-powered genomic variant annotation and classification tool built with Lang
 
 > **DISCLAIMER:** This is a research prototype. It has **not** been validated for clinical use. Variant classifications should be reviewed by a certified clinical molecular geneticist and confirmed through validated, CLIA-certified processes.
 
+> **VERSION 2.1 — April 30, 2026.** Adds a hybrid RAG layer over the ClinGen SVI/VCEP corpus (Richards 2015 + 5 SVI/VCEP papers, FAISS-indexed), all six active SVI overrides applied by default (Abou Tayoun 2018 PVS1 11-branch tree, Riggs 2020 ClinGen Haploinsufficiency Score gate, Ghosh 2018 PM2_Supporting downgrade, Pejaver 2022 PP3/BP4 REVEL calibration, Tavtigian 2018 Bayesian combining, SVI 2018 PP5/BP6 deprecation), dual-framework verdicts (Tavtigian primary + Richards Table 5 in parallel) with disagreement detection, three-layer Microsoft Responsible AI guardrails, plain-English LLM explainer (patient + curator audiences), and a build-validator that flags GRCh37/GRCh38 notation/build mismatches. See `INTEGRATION_NOTES.md` for the per-file changelog.
+
+---
+
+## 🚀 Brand-new to this? Start here
+
+If you've never used Python, an API, or a `.env` file before — read **[`SETUP_FOR_BEGINNERS.md`](./SETUP_FOR_BEGINNERS.md)**. It walks through everything from "what is an API key" through to your first variant classification. ~30 minutes start to finish, no prior knowledge needed.
+
+---
+
+## 📚 How to cite this work
+
+PathoMAN 2.0 is published under the Apache 2.0 license **with an attribution-and-citation amendment** (see `LICENSE` and `NOTICE`). Any academic, research, software-derivative, or clinical-presentation use **must cite** this repository.
+
+**Minimum APA citation:**
+> Ravichandran, V. (2026). *PathoMAN 2.0: Pathogenicity of Mutation Analyzer — A hybrid retrieval-augmented agentic pipeline for ACMG/AMP germline variant classification* (Version 2.1) [Computer software]. Department of Health Informatics, Rutgers School of Health Professions. https://github.com/vigneshravi/PathoMAN2.0
+
+For BibTeX / RIS / IEEE / MLA / Chicago / Harvard formats, click the **"Cite this repository"** button on the GitHub page (powered by `CITATION.cff`).
+
+If you use the **specific algorithms or thresholds** PathoMAN implements (Abou Tayoun PVS1 tree, Pejaver REVEL calibration, Tavtigian Bayesian combining, etc.), you must also cite the primary papers — see `NOTICE` for the full list.
+
+**Forks, derivative repositories, and commercial use** must additionally:
+- Keep the unmodified `NOTICE` file at the project root
+- Link back to https://github.com/vigneshravi/PathoMAN2.0 in their README
+- For commercial use, request prior written permission
+
 ---
 
 ## Table of Contents

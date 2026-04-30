@@ -1,0 +1,50 @@
+cff-version: 1.2.0
+title: "PathoMAN 2.0 — Pathogenicity of Mutation Analyzer"
+message: "If you use this software, please cite it using the metadata below."
+type: software
+version: "2.1.0"
+date-released: "2026-04-30"
+authors:
+  - family-names: Ravichandran
+    given-names: Vignesh
+    affiliation: "Department of Health Informatics, Rutgers School of Health Professions"
+    orcid: ""  # add yours if you have one
+repository-code: "https://github.com/vigneshravi/PathoMAN2.0"
+url: "https://github.com/vigneshravi/PathoMAN2.0"
+license: "Apache-2.0 WITH Attribution-NonCommercial-Citation-required"
+keywords:
+  - bioinformatics
+  - clinical-genomics
+  - ACMG
+  - variant-classification
+  - retrieval-augmented-generation
+  - LangGraph
+  - hereditary-cancer
+abstract: >-
+  PathoMAN 2.0 is a hybrid retrieval-augmented agentic pipeline for ACMG/AMP
+  germline variant classification. It implements a 10-node LangGraph state
+  machine integrating ClinVar, gnomAD v4 + v3 + v2, Ensembl VEP, dbNSFP,
+  ClinGen Dosage Sensitivity, and a FAISS-indexed corpus of six SVI/VCEP
+  source documents. All six active ClinGen Sequence Variant Interpretation
+  Working Group overrides are applied by default (Abou Tayoun 2018 PVS1
+  decision tree, Riggs 2020 Haploinsufficiency Score gate, Ghosh 2018 PM2
+  strength downgrade, Pejaver 2022 PP3/BP4 calibration, Tavtigian 2018
+  Bayesian combining, SVI 2018 PP5/BP6 deprecation). Combining is
+  dual-framework (Tavtigian primary + Richards 2015 Table 5 in parallel)
+  with automated disagreement detection. A three-layer Microsoft Responsible
+  AI guardrail architecture wraps every classification with deterministic
+  rule subsumption, structured-output schema validation, and citation
+  enforcement. Built for educational and research use only.
+references:
+  - type: article
+    title: "Standards and guidelines for the interpretation of sequence variants: A joint consensus recommendation of the American College of Medical Genetics and Genomics and the Association for Molecular Pathology"
+    authors:
+      - family-names: Richards
+        given-names: Sue
+    year: 2015
+    journal: "Genetics in Medicine"
+    volume: 17
+    issue: 5
+    start: 405
+    end: 424
+    doi: "10.1038/gim.2015.30"

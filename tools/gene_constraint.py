@@ -3,6 +3,10 @@
 Queries gnomAD for missense/LOF constraint and UniProt for functional
 domain positions. Used for ACMG criteria PM1 (mutational hotspot /
 functional domain) and PM4/BP3 (protein length change).
+
+Also hosts the ClinGen Dosage Sensitivity (Haploinsufficiency Score) loader
+ported from FinalTermProject_28Apr2026/src/tools.py on 2026-04-30 for the
+SVI-aware PVS1 gate (Riggs et al. 2020).
 """
 
 import json as _json
@@ -11,6 +15,12 @@ import re
 from typing import Any, Optional
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+
+# `requests` is used by the ClinGen TSV loader below. It's a transitive
+# dependency of langchain/langchain-anthropic in PathoMAN's existing
+# requirements, so this import is safe in practice; if it ever isn't,
+# the import lives inside _load_clingen_dosage_tsv() rather than at the
+# top so the rest of this module is not impacted.
 
 logger = logging.getLogger(__name__)
 
@@ -296,3 +306,109 @@ def assess_pm4_bp3(
             result["justification"] += f" ({result['aa_change_size']} amino acids affected)"
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# ClinGen Dosage Sensitivity — Haploinsufficiency Score (PVS1 applicability)
+# ---------------------------------------------------------------------------
+# Ported from FinalTermProject_28Apr2026/src/tools.py on 2026-04-30 to support
+# the SVI-aware PVS1 evaluator (Abou Tayoun 2018 + Riggs 2020 HI gate).
+#
+# Implementation: fetch the ClinGen TSV at first invocation, parse into a
+# module-level dict, subsequent lookups are local (sub-second). The cache
+# survives the Python process; a Streamlit restart re-fetches.
+#
+# Source TSV: https://ftp.clinicalgenome.org/ClinGen_gene_curation_list_GRCh38.tsv
+# ClinGen does not provide a JSON REST API for these scores; the FTP TSV is
+# the canonical source. Keys (per ClinGen scoring rubric):
+#   3  = Sufficient evidence for HI / dosage pathogenicity (PVS1 APPLICABLE)
+#   2  = Some evidence for HI                            (PVS1 with caveat)
+#   1  = Little evidence for HI                          (PVS1 NOT applicable)
+#   0  = No evidence for HI                              (PVS1 NOT applicable)
+#   30 = Gene associated with autosomal recessive phenotype
+#        (PVS1 only applicable in trans with another pathogenic variant)
+#   40 = Dosage sensitivity unlikely                     (PVS1 NOT applicable)
+# ---------------------------------------------------------------------------
+
+_CLINGEN_DOSAGE_TSV_URL = (
+    "https://ftp.clinicalgenome.org/ClinGen_gene_curation_list_GRCh38.tsv"
+)
+_CLINGEN_DOSAGE_CACHE: Optional[dict[str, dict[str, Any]]] = None
+
+
+def _load_clingen_dosage_tsv() -> dict[str, dict[str, Any]]:
+    """Fetch + parse the ClinGen dosage TSV. Returns dict keyed by gene_symbol.
+
+    Source: https://ftp.clinicalgenome.org/ClinGen_gene_curation_list_GRCh38.tsv
+    Refreshed by ClinGen — last-modified header surfaced in result.
+    """
+    import requests  # local import — see top-of-module note
+    logger.info("Fetching ClinGen dosage TSV from %s", _CLINGEN_DOSAGE_TSV_URL)
+    r = requests.get(_CLINGEN_DOSAGE_TSV_URL, timeout=60)
+    r.raise_for_status()
+    last_modified = r.headers.get("Last-Modified", "unknown")
+
+    out: dict[str, dict[str, Any]] = {}
+    for line in r.text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        cols = line.split("\t")
+        if len(cols) < 6:
+            continue
+        gene = cols[0]
+        try:
+            hi_score = int(cols[4]) if cols[4].lstrip("-").isdigit() else None
+        except (ValueError, IndexError):
+            hi_score = None
+        out[gene] = {
+            "gene_symbol": gene,
+            "gene_id": cols[1],
+            "cytoband": cols[2],
+            "genomic_location": cols[3],
+            "hi_score": hi_score,
+            "hi_description": cols[5] if len(cols) > 5 else "",
+            "hi_pmids": [c for c in cols[6:12] if c],
+            "ts_score": int(cols[12]) if len(cols) > 12 and cols[12].lstrip("-").isdigit() else None,
+            "ts_description": cols[13] if len(cols) > 13 else "",
+            "date_last_evaluated": cols[20] if len(cols) > 20 else "",
+            "_source_last_modified": last_modified,
+        }
+    logger.info(
+        "Parsed %d ClinGen dosage entries (TSV last-modified: %s)",
+        len(out), last_modified,
+    )
+    return out
+
+
+def clingen_dosage_lookup(gene_symbol: str) -> dict[str, Any]:
+    """Return ClinGen Haploinsufficiency Score + metadata for a gene.
+
+    Loads the TSV once per Python session (~265 KB, sub-second) and caches
+    in memory. Subsequent calls are dict lookups.
+
+    Returns dict with hi_score (int or None), hi_description, pmids, etc.
+    Used by svi.acmg_rules.evaluate_PVS1 — see svi/constants.py:
+        hi_score=3   -> PVS1 applicable
+        hi_score=2   -> PVS1 applicable with caveat
+        hi_score=30  -> AR gene (PVS1 only in trans)
+        hi_score in {0, 1, 40} -> PVS1 not applicable
+    """
+    global _CLINGEN_DOSAGE_CACHE
+    if _CLINGEN_DOSAGE_CACHE is None:
+        try:
+            _CLINGEN_DOSAGE_CACHE = _load_clingen_dosage_tsv()
+        except Exception as e:
+            return {
+                "available": False,
+                "error": f"ClinGen TSV fetch failed: {e}",
+                "gene_symbol": gene_symbol,
+            }
+
+    rec = _CLINGEN_DOSAGE_CACHE.get(gene_symbol)
+    if not rec:
+        return {
+            "available": False,
+            "gene_symbol": gene_symbol,
+            "error": "gene not in ClinGen dosage curation list",
+        }
+    return {"available": True, **rec}

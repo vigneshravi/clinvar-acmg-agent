@@ -12,6 +12,7 @@ from agents.gnomad_agent import gnomad_agent_node
 from agents.input_parser import input_parser_node
 from agents.pathway_agent import pathway_agent_node
 from agents.pubmed_agent import pubmed_agent_node
+from agents.rag_guideline_agent import rag_guideline_agent_node
 from agents.tcga_agent import tcga_agent_node
 from graph.state import VariantState, make_initial_state
 from graph.supervisor import supervisor_node, supervisor_route
@@ -22,10 +23,11 @@ logger = logging.getLogger(__name__)
 def build_graph() -> StateGraph:
     """Build and return the compiled LangGraph StateGraph.
 
-    Graph topology:
+    Graph topology (post-2026-04-30 SVI integration — 10 nodes):
         START → input_parser → supervisor ─┬─→ clinvar_agent → gnomad_agent
                                             │    → pubmed_agent → alphafold_agent
                                             │    → tcga_agent → pathway_agent
+                                            │    → rag_guideline_agent
                                             │    → acmg_classifier → END
                                             │
                                             └─→ END  (on parse error)
@@ -41,6 +43,7 @@ def build_graph() -> StateGraph:
     graph.add_node("alphafold_agent", alphafold_agent_node)
     graph.add_node("tcga_agent", tcga_agent_node)
     graph.add_node("pathway_agent", pathway_agent_node)
+    graph.add_node("rag_guideline_agent", rag_guideline_agent_node)
     graph.add_node("acmg_classifier", acmg_classifier_node)
 
     # --- Add edges ---
@@ -66,7 +69,9 @@ def build_graph() -> StateGraph:
     graph.add_edge("pubmed_agent", "alphafold_agent")
     graph.add_edge("alphafold_agent", "tcga_agent")
     graph.add_edge("tcga_agent", "pathway_agent")
-    graph.add_edge("pathway_agent", "acmg_classifier")
+    # SVI integration (2026-04-30): RAG guideline agent injected before classifier
+    graph.add_edge("pathway_agent", "rag_guideline_agent")
+    graph.add_edge("rag_guideline_agent", "acmg_classifier")
 
     # acmg_classifier → END
     graph.add_edge("acmg_classifier", END)

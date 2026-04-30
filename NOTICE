@@ -1,0 +1,71 @@
+PathoMAN 2.0 — Pathogenicity of Mutation Analyzer
+Copyright (c) 2026 Vignesh Ravichandran
+Department of Health Informatics, Rutgers School of Health Professions
+
+This product includes software developed by Vignesh Ravichandran.
+Licensed under the Apache License, Version 2.0, with the attribution and
+citation requirements specified in the LICENSE file at the project root.
+
+ANY USE OF THIS SOFTWARE — including forks, derivative works, integration
+into other tools, deployment as a hosted service, or use in academic
+publications — REQUIRES citation of:
+
+    Ravichandran, V. (2026). PathoMAN 2.0: Pathogenicity of Mutation
+    Analyzer — A hybrid retrieval-augmented agentic pipeline for ACMG/AMP
+    germline variant classification. Department of Health Informatics,
+    Rutgers School of Health Professions.
+    https://github.com/vigneshravi/PathoMAN2.0
+
+For academic citation in BibTeX, APA, IEEE, MLA, or RIS formats, see the
+machine-readable CITATION.cff file at the project root.
+
+================================================================================
+THIRD-PARTY ATTRIBUTION
+================================================================================
+
+This software incorporates and depends on the following third-party
+resources. Their licenses and citation requirements are independent of this
+project's license; you must comply with each upstream license when using
+PathoMAN 2.0.
+
+API SERVICES (queried at runtime):
+- NCBI Entrez E-utilities (ClinVar, PubMed) — public API, requires email
+- gnomAD GraphQL API — Broad Institute, public, no auth
+- Ensembl VEP REST API — EMBL-EBI, public, no auth
+- MyVariant.info REST API — Stephens Lab, public, no auth
+- ClinGen Dosage Sensitivity TSV — ClinGen / NIH, public download
+- Anthropic Claude API — Anthropic, requires user-supplied API key
+
+PYTHON LIBRARIES (see requirements.txt for full list):
+- LangChain, LangGraph — MIT
+- FAISS — MIT (Meta)
+- sentence-transformers, all-mpnet-base-v2 — Apache 2.0
+- Anthropic Python SDK — MIT
+- Streamlit — Apache 2.0
+- Pydantic — MIT
+- Biopython — Biopython License Agreement
+- Pandas, NumPy, Matplotlib — BSD-3-Clause
+
+KNOWLEDGE BASE PAPERS (indexed for retrieval — academic citations):
+- Richards et al. 2015, Genet Med 17:405–424 (DOI 10.1038/gim.2015.30)
+- Abou Tayoun et al. 2018, Genet Med 20:1054–1060 (DOI 10.1038/s41436-018-0044-2)
+- Pejaver et al. 2022, Am J Hum Genet 109:2163–2177 (DOI 10.1016/j.ajhg.2022.10.013)
+- Tavtigian et al. 2018, Genet Med 20:1054–1060 (DOI 10.1038/gim.2017.210)
+- Riggs et al. 2020, Genet Med 22:245–257 (DOI 10.1038/s41436-019-0686-8)
+- Parsons et al. 2019, Hum Mutat 40:1557–1578 (DOI 10.1002/humu.23818)
+
+CITE THESE PAPERS IF YOU USE THEIR SPECIFIC ALGORITHMS OR THRESHOLDS via
+PathoMAN. The PathoMAN-level citation above does not replace primary-
+source attribution.
+
+================================================================================
+DISCLAIMER
+================================================================================
+
+PathoMAN 2.0 is a research demonstration only. It is NOT a medical device,
+NOT certified for clinical use, and has NOT been validated against an
+independent expert reference cohort. All variant classifications produced
+by this software MUST be reviewed by a qualified clinical molecular
+geneticist before any clinical action is taken. The author and
+contributors disclaim all liability for clinical decisions made using
+this software.

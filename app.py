@@ -11,6 +11,8 @@ load_dotenv()
 from cache.cache_manager import CacheManager
 from graph.graph import run_graph_stream
 from graph.state import VariantState, make_initial_state
+from svi.build_validator import validate_build
+from svi import explainer as svi_explainer
 
 _cache = CacheManager()
 
@@ -98,6 +100,51 @@ st.markdown(f"""
     .pacman-step {{ display:flex; flex-direction:column; align-items:center; }}
     @keyframes pulse {{ from {{ transform:scale(1); }} to {{ transform:scale(1.3); }} }}
     .pacman-char {{ display:inline-block; margin:0 4px; vertical-align:middle; }}
+    /* --- SVI integration (2026-04-30) --- */
+    .svi-badge-row {{ display:flex; flex-wrap:wrap; gap:6px; margin:8px 0 4px 0; }}
+    .svi-badge {{ display:inline-block; padding:3px 10px; border-radius:14px;
+                  font-weight:600; font-size:0.72rem; color:white; cursor:default;
+                  position:relative; box-shadow:0 1px 2px rgba(0,0,0,0.1); }}
+    .svi-badge.b-orange {{ background:#FF8F00; }}
+    .svi-badge.b-green  {{ background:#43A047; }}
+    .svi-badge.b-blue   {{ background:#1E88E5; }}
+    .svi-badge.b-purple {{ background:#8E24AA; }}
+    .svi-badge.b-teal   {{ background:#00897B; }}
+    .svi-badge.b-gray   {{ background:#757575; }}
+    .svi-badge[title]:hover::after {{
+        content: attr(title); position:absolute; bottom:130%; left:50%;
+        transform:translateX(-50%); background:#222; color:#fff;
+        padding:6px 10px; border-radius:6px; font-size:0.7rem; font-weight:400;
+        white-space:pre-wrap; max-width:320px; z-index:200;
+        box-shadow:0 2px 8px rgba(0,0,0,0.25);
+    }}
+    /* Dual-framework verdict cards */
+    .verdict-row {{ display:flex; gap:14px; margin:6px 0 2px 0; flex-wrap:wrap; }}
+    .verdict-card {{ flex:1 1 220px; padding:14px 18px; border-radius:10px;
+                     border:1px solid #e0e0e0; background:#fafafa; }}
+    .verdict-card.primary {{ flex:2 1 320px; border-color:#FF8F00; background:#fff8e6; }}
+    .verdict-card .vlabel {{ color:#888; font-size:0.7rem; text-transform:uppercase;
+                              letter-spacing:0.06em; }}
+    .verdict-card .vclass {{ font-weight:700; font-size:1.15rem; margin-top:2px; }}
+    .verdict-card.primary .vclass {{ font-size:1.45rem; color:#222; }}
+    .verdict-card .vmeta {{ color:#666; font-size:0.78rem; margin-top:4px; }}
+    .verdict-disagree {{ background:#fff8e1; border-left:4px solid #FFC107;
+                          padding:10px 12px; margin:8px 0; border-radius:6px;
+                          font-size:0.85rem; color:#5b4708; }}
+    /* ACMG reasoning cards */
+    .reason-card {{ border:1px solid #e0e0e0; border-radius:8px; padding:10px 14px;
+                    margin:6px 0; background:#fff; }}
+    .reason-card.path-met {{ border-left:5px solid #ff4b4b; }}
+    .reason-card.ben-met  {{ border-left:5px solid #4caf50; }}
+    .reason-card.not-met  {{ border-left:5px solid #cccccc; opacity:0.85; }}
+    .reason-card .rc-head {{ font-weight:700; font-size:0.95rem; }}
+    .reason-card .rc-meta {{ color:#666; font-size:0.78rem; margin-top:2px; }}
+    .reason-card .rc-just {{ font-size:0.85rem; margin-top:6px; line-height:1.4; }}
+    .reason-card .rc-cite {{ color:#1E88E5; font-size:0.72rem; margin-top:6px; }}
+    /* RAG provenance pills */
+    .rag-pill {{ display:inline-block; padding:2px 8px; border-radius:10px;
+                 background:#e3f2fd; color:#1565c0; font-size:0.7rem; margin:2px;
+                 font-family:Menlo,Consolas,monospace; }}
 </style>
 <div class="pathoman-header">
     {PACMAN_LOGO}
@@ -177,13 +224,14 @@ NODE_LABELS = {
     "pubmed_agent": "Literature", "alphafold_agent": "Protein",
     "tcga_agent": "Clinical",
     "pathway_agent": "Pathways",
+    "rag_guideline_agent": "SVI/RAG",
     "acmg_classifier": "ACMG",
 }
 
 PIPELINE_STEPS = [
     "input_parser", "supervisor", "clinvar_agent", "gnomad_agent",
     "pubmed_agent", "alphafold_agent", "tcga_agent", "pathway_agent",
-    "acmg_classifier",
+    "rag_guideline_agent", "acmg_classifier",
 ]
 
 POP_ORDER = ["afr", "amr", "asj", "eas", "fin", "mid", "nfe", "sas", "remaining", "ami"]
@@ -456,12 +504,28 @@ if "final_state" in st.session_state:
     st.markdown(f"**{' | '.join(p for p in summary_parts if p)}**")
 
     # ===================================================================
+    # BUILD-MISMATCH BANNER (above classification hero)
+    # ===================================================================
+    raw_in = fs.get("raw_input") or st.session_state.get("raw_input_str", "")
+    declared_b = fs.get("genome_build") or st.session_state.get("genome_build", "GRCh38")
+    if raw_in:
+        build_check = validate_build(raw_in, declared_b)
+        if not build_check["consistent"]:
+            st.warning(
+                f"⚠ Build mismatch: {build_check['message']}  \n"
+                f"**Recommended action:** `{build_check['recommended_action']}`"
+            )
+
+    # ===================================================================
     # CLASSIFICATION HERO BANNER (first thing shown)
     # ===================================================================
     classification = fs.get("classification", "VUS")
+    # Tavtigian uses "Variant of Uncertain Significance" — fold to VUS for color lookup
     colors = {
         "Pathogenic": ("#ff4b4b", "#fff"), "Likely Pathogenic": ("#ff8c00", "#fff"),
-        "VUS": ("#ffd700", "#333"), "Likely Benign": ("#90ee90", "#333"), "Benign": ("#4caf50", "#fff"),
+        "VUS": ("#ffd700", "#333"),
+        "Variant of Uncertain Significance": ("#ffd700", "#333"),
+        "Likely Benign": ("#90ee90", "#333"), "Benign": ("#4caf50", "#fff"),
     }
     bg, fg = colors.get(classification, ("#ffd700", "#333"))
     confidence = fs.get("confidence", "Low")
@@ -475,6 +539,131 @@ if "final_state" in st.session_state:
         f'</div>',
         unsafe_allow_html=True,
     )
+
+    # ===================================================================
+    # SVI OVERRIDES BADGE BAR (2026-04-30)
+    # ===================================================================
+    overrides = fs.get("svi_overrides_applied") or []
+    # Always show PP5/BP6 deprecated even if list is empty
+    if "PP5/BP6 deprecated" not in overrides:
+        overrides = list(overrides) + ["PP5/BP6 deprecated"]
+    badge_meta = {
+        "Abou Tayoun PVS1 tree": (
+            "b-orange",
+            "Abou Tayoun et al. 2018 (Genet Med 20:1054-1060) — 11-branch PVS1 decision tree. Replaces simple null-variant rule.",
+        ),
+        "ClinGen HI gate": (
+            "b-green",
+            "Riggs et al. 2020 (Genet Med 22:245-257) — ClinGen Haploinsufficiency Score gates PVS1 applicability.",
+        ),
+        "PM2 Supporting (SVI 2020)": (
+            "b-blue",
+            "ClinGen SVI 2020 (Ghosh et al. 2018) — PM2 strength downgraded from Moderate to Supporting at modern sequencing scale.",
+        ),
+        "Pejaver REVEL calibration": (
+            "b-purple",
+            "Pejaver et al. 2022 (AJHG 109:2163-2177) — calibrated REVEL likelihood-ratio thresholds for PP3/BP4 (replaces binary PP3).",
+        ),
+        "Tavtigian Bayesian": (
+            "b-teal",
+            "Tavtigian et al. 2018 (Genet Med 20:1054-1060) — Bayesian point system supersedes Richards Table 5 booleans (primary verdict).",
+        ),
+        "PP5/BP6 deprecated": (
+            "b-gray",
+            "ClinGen SVI 2018 — PP5 and BP6 deprecated due to corpus-circularity (ClinVar labels).",
+        ),
+    }
+    badge_html_parts = []
+    for o in overrides:
+        cls, tip = badge_meta.get(o, ("b-gray", o))
+        tip_safe = tip.replace('"', '&quot;')
+        badge_html_parts.append(f'<span class="svi-badge {cls}" title="{tip_safe}">{o}</span>')
+    if badge_html_parts:
+        st.markdown(
+            '<div class="svi-badge-row">' + "".join(badge_html_parts) + "</div>",
+            unsafe_allow_html=True,
+        )
+
+    # ===================================================================
+    # DUAL-FRAMEWORK VERDICT DISPLAY (Tavtigian primary + Richards 2015)
+    # ===================================================================
+    tav = fs.get("tavtigian") or {}
+    rich = fs.get("richards_2015") or {}
+    primary_class = fs.get("primary_classification") or classification
+    primary_fw = fs.get("primary_framework") or "Tavtigian 2018 (Bayesian)"
+    if tav or rich:
+        net_pts = tav.get("net_points") if isinstance(tav, dict) else None
+        path_pts = tav.get("path_points") if isinstance(tav, dict) else None
+        ben_pts = tav.get("benign_points") if isinstance(tav, dict) else None
+        rich_class = rich.get("classification") if isinstance(rich, dict) else None
+        rich_rule = rich.get("rule_fired") if isinstance(rich, dict) else None
+        rich_counts = rich.get("counts") if isinstance(rich, dict) else None
+
+        net_str = (f"{net_pts:+d} pts" if isinstance(net_pts, int) else "—")
+        pts_break = (
+            f"+{path_pts} path / -{ben_pts} ben"
+            if isinstance(path_pts, int) and isinstance(ben_pts, int) else ""
+        )
+
+        st.markdown(
+            f'<div class="verdict-row">'
+            f'  <div class="verdict-card primary">'
+            f'    <div class="vlabel">Primary &middot; {primary_fw}</div>'
+            f'    <div class="vclass">{primary_class}</div>'
+            f'    <div class="vmeta">Net {net_str} &nbsp;{pts_break}</div>'
+            f'  </div>'
+            f'  <div class="verdict-card">'
+            f'    <div class="vlabel">Comparison &middot; Richards 2015 Table 5</div>'
+            f'    <div class="vclass">{rich_class or "—"}</div>'
+            f'    <div class="vmeta">Rule: {rich_rule or "—"} &middot; {rich_counts or ""}</div>'
+            f'  </div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        if fs.get("frameworks_agree") is False and fs.get("disagreement_explanation"):
+            st.markdown(
+                f'<div class="verdict-disagree"><strong>Frameworks disagree:</strong> '
+                f'{fs["disagreement_explanation"]}</div>',
+                unsafe_allow_html=True,
+            )
+
+    # ===================================================================
+    # GUARDRAILS PANEL (Microsoft RAI 3-layer status)
+    # ===================================================================
+    gr = fs.get("guardrails") or {}
+    if gr:
+        with st.expander("Guardrails (3-layer Responsible AI status)", expanded=False):
+            l1 = gr.get("layer1_model", {})
+            l2 = gr.get("layer2_metaprompt", {})
+            l3 = gr.get("layer3_io", {})
+            cols_g = st.columns(3)
+            with cols_g[0]:
+                st.markdown("**Layer 1 — Model**")
+                det = l1.get("deterministic_criteria", [])
+                st.markdown(
+                    f"Deterministic criteria fired: `{', '.join(det) if det else 'none'}`"
+                )
+                st.markdown(f"Active: {'✅' if l1.get('active') else '❌'}")
+            with cols_g[1]:
+                st.markdown("**Layer 2 — Metaprompt**")
+                st.markdown(f"Schema: `{l2.get('schema', '—')}`")
+                st.markdown(
+                    f"Defensive prompting: {'✅' if l2.get('defensive_prompt') else '❌'}"
+                )
+                v = l2.get("validated")
+                vstr = "✅" if v else ("❌" if v is False else "—")
+                st.markdown(f"Output validated: {vstr}")
+            with cols_g[2]:
+                st.markdown("**Layer 3 — Application/I-O**")
+                inj = l3.get("injection_detected")
+                if inj:
+                    st.error(f"Injection detected: {l3.get('injection_reason', '')}")
+                else:
+                    st.markdown("Injection scan: ✅ clean")
+                st.markdown(
+                    f"Disclaimer attached: {'✅' if l3.get('disclaimer_attached') else '❌'}"
+                )
 
     # ===================================================================
     # ACMG CRITERIA PILLS
@@ -521,9 +710,48 @@ if "final_state" in st.session_state:
     # ===================================================================
     # TABBED EVIDENCE LAYOUT
     # ===================================================================
-    tab_freq, tab_clinvar, tab_lit, tab_struct, tab_pubdata, tab_pathways, tab_cc = st.tabs(
-        ["Frequencies", "ClinVar", "Literature", "Structure", "Public Datasets", "Pathways", "Case-Control"]
+    (
+        tab_freq, tab_plain, tab_clinvar, tab_lit, tab_struct, tab_pubdata,
+        tab_pathways, tab_cc, tab_reason,
+    ) = st.tabs(
+        [
+            "Frequencies", "Plain English", "ClinVar", "Literature", "Structure",
+            "Public Datasets", "Pathways", "Case-Control", "ACMG Reasoning",
+        ]
     )
+
+    # ---- TAB: Plain English (audience-specific explainer) ----
+    with tab_plain:
+        # Cache key: variant identity + audience selection so toggling doesn't
+        # re-call the Anthropic API.
+        variant_id = (
+            fs.get("gnomad", {}).get("gnomad_variant_id")
+            or fs.get("hgvs_on_transcript")
+            or fs.get("raw_input", "")
+        )
+        mode = st.radio(
+            "Audience:",
+            ["Patient / Family member", "Variant curator"],
+            horizontal=True,
+            key="explainer_mode",
+        )
+        cache_key = f"explainer::{variant_id}::{mode}"
+        if cache_key not in st.session_state:
+            with st.spinner("Generating explanation via Claude Sonnet 4.5..."):
+                if mode.startswith("Patient"):
+                    st.session_state[cache_key] = svi_explainer.explain_for_patient(fs)
+                else:
+                    st.session_state[cache_key] = svi_explainer.explain_for_curator(fs)
+        explanation = st.session_state[cache_key]
+        st.markdown(f"### {mode} explanation")
+        if explanation.get("error"):
+            st.error(explanation.get("text", "Explainer unavailable."))
+        else:
+            st.markdown(explanation.get("text", ""))
+        st.caption(
+            f"Generated by Claude Sonnet 4.5 from the structured ACMG verdict above. "
+            f"{explanation.get('disclaimer', '')}"
+        )
 
     # ---- TAB: Frequencies ----
     with tab_freq:
@@ -976,6 +1204,33 @@ if "final_state" in st.session_state:
             else:
                 st.info("No druggability data available.")
 
+        # ---- RAG provenance (SVI integration, 2026-04-30) ----
+        rag_chunks = fs.get("rag_chunks") or []
+        rag_query = fs.get("rag_query")
+        rag_error = fs.get("rag_error")
+        st.divider()
+        st.markdown("**RAG Provenance \u2014 SVI/VCEP Guideline Retrieval**")
+        if rag_query:
+            st.caption(f"Query: `{rag_query}`")
+        if rag_error:
+            st.warning(f"RAG error: {rag_error}")
+        if rag_chunks:
+            rag_rows = []
+            for ch in rag_chunks[:10]:
+                rag_rows.append({
+                    "chunk_id": ch.get("chunk_id", ""),
+                    "Source": ch.get("source", ""),
+                    "File": ch.get("filename", ""),
+                    "Score": f"{ch.get('score', 0):.3f}",
+                    "Excerpt": (ch.get("text", "") or "")[:140].replace("\n", " ") + "\u2026",
+                })
+            st.dataframe(rag_rows, use_container_width=True, hide_index=True)
+        else:
+            st.caption(
+                "(No retrievals \u2014 index may not have been built yet. "
+                "Run `python -m svi.bootstrap_kb` then re-classify a variant.)"
+            )
+
     # ---- TAB: Case-Control ----
     with tab_cc:
         if gnomad and af_data.get("variant_in_gnomad"):
@@ -1129,6 +1384,101 @@ if "final_state" in st.session_state:
                     st.info("Provide at least 2 ethnicities for weighted GLM.")
         else:
             st.info("Variant must be present in gnomAD for case-control analysis.")
+
+    # ---- TAB: ACMG Reasoning (SVI integration, 2026-04-30) ----
+    with tab_reason:
+        criteria = fs.get("criteria_triggered") or []
+        if not criteria:
+            st.info("No ACMG criteria evaluated yet.")
+        else:
+            # Group by direction + strength
+            def _strength_rank(s: str) -> int:
+                return {
+                    "Very Strong": 0, "Stand-Alone": 0, "Strong": 1,
+                    "Moderate": 2, "Supporting": 3,
+                }.get(s, 4)
+
+            path_grp = sorted(
+                [c for c in criteria if c.get("direction") == "pathogenic"],
+                key=lambda c: (_strength_rank(c.get("strength", "")), c.get("code", "")),
+            )
+            ben_grp = sorted(
+                [c for c in criteria if c.get("direction") == "benign"],
+                key=lambda c: (_strength_rank(c.get("strength", "")), c.get("code", "")),
+            )
+            other_grp = [
+                c for c in criteria
+                if c.get("direction") not in ("pathogenic", "benign")
+            ]
+
+            def _render_card(c: dict) -> str:
+                met = c.get("met", False)
+                direction = c.get("direction", "")
+                if met and direction == "pathogenic":
+                    css = "path-met"
+                elif met and direction == "benign":
+                    css = "ben-met"
+                else:
+                    css = "not-met"
+                code = c.get("code", "")
+                strength = c.get("strength", "")
+                name = c.get("name", "")
+                just = (c.get("justification", "") or "").replace("<", "&lt;")
+                src = c.get("evidence_source", "")
+                cites = c.get("rag_citations") or []
+                status = "MET" if met else "not met"
+                cite_html = ""
+                if cites:
+                    cite_html = (
+                        '<div class="rc-cite">RAG citations: '
+                        + " ".join(f'<span class="rag-pill">{cid}</span>' for cid in cites)
+                        + "</div>"
+                    )
+                return (
+                    f'<div class="reason-card {css}">'
+                    f'  <div class="rc-head">{code} &middot; {strength} &middot; <em>{status}</em></div>'
+                    f'  <div class="rc-meta">{name} &middot; source: {src}</div>'
+                    f'  <div class="rc-just">{just}</div>'
+                    f'  {cite_html}'
+                    f'</div>'
+                )
+
+            if path_grp:
+                st.markdown("#### Pathogenic-direction criteria")
+                st.markdown(
+                    "".join(_render_card(c) for c in path_grp),
+                    unsafe_allow_html=True,
+                )
+            if ben_grp:
+                st.markdown("#### Benign-direction criteria")
+                st.markdown(
+                    "".join(_render_card(c) for c in ben_grp),
+                    unsafe_allow_html=True,
+                )
+            if other_grp:
+                st.markdown("#### Other / indeterminate")
+                st.markdown(
+                    "".join(_render_card(c) for c in other_grp),
+                    unsafe_allow_html=True,
+                )
+
+            # ClinGen Dosage card
+            cd = fs.get("clingen_dosage") or {}
+            if cd:
+                st.divider()
+                if cd.get("available"):
+                    st.markdown(
+                        f"**ClinGen Dosage Sensitivity (Riggs 2020)** &mdash; "
+                        f"HI Score = `{cd.get('hi_score')}` &middot; "
+                        f"{cd.get('hi_description', '')} &middot; "
+                        f"PMIDs: {', '.join(cd.get('hi_pmids', []) or []) or '—'} "
+                        f"(TSV last-modified: {cd.get('_source_last_modified', '?')})"
+                    )
+                else:
+                    st.info(
+                        f"ClinGen dosage entry not available for "
+                        f"`{cd.get('gene_symbol', '?')}`: {cd.get('error', '')}"
+                    )
 
     # ===================================================================
     # Warnings + Disclaimer + Debug (compact footer)

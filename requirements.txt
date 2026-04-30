@@ -11,3 +11,11 @@ statsmodels>=0.14.0
 numpy>=1.24.0
 plotly>=5.15.0
 biomcp-cli>=0.8.16
+# --- SVI integration (2026-04-30) ---
+pydantic>=2.8                  # Layer 2 schema (svi/guardrails.py)
+requests>=2.32                 # ClinGen TSV fetch + svi/tools wrappers
+langchain-community>=0.3.0     # FAISS vector store (svi/rag.py)
+langchain-huggingface>=0.1.0   # Sentence-transformers embedder
+langchain-text-splitters>=0.3.0
+sentence-transformers>=3.0
+faiss-cpu>=1.8.0

@@ -87,6 +87,20 @@ class VariantState(TypedDict):
     reasoning: Optional[str]
     disclaimer: Optional[str]
 
+    # --- New fields for SVI integration (Phase 5 enhancement, 2026-04-30) ---
+    clingen_dosage: Optional[Dict[str, Any]]      # HI Score lookup result (Riggs 2020)
+    rag_chunks: Optional[List[Dict[str, Any]]]    # FAISS retrievals over SVI/VCEP corpus
+    rag_query: Optional[str]                      # the constructed retrieval query
+    rag_error: Optional[str]
+    tavtigian: Optional[Dict[str, Any]]           # Tavtigian Bayesian verdict (primary)
+    richards_2015: Optional[Dict[str, Any]]       # Richards Table 5 verdict (comparison)
+    frameworks_agree: Optional[bool]
+    disagreement_explanation: Optional[str]
+    primary_classification: Optional[str]         # Tavtigian primary
+    primary_framework: Optional[str]
+    svi_overrides_applied: Optional[List[str]]    # SVI override names that fired for this variant
+    guardrails: Optional[Dict[str, Any]]          # Three-layer RAI status (Layer 1/2/3)
+
     # --- Graph control ---
     current_node: Optional[str]
     errors: List[str]
@@ -135,6 +149,19 @@ def make_initial_state(raw_input: str) -> VariantState:
         confidence=None,
         reasoning=None,
         disclaimer=None,
+        # SVI integration (2026-04-30)
+        clingen_dosage=None,
+        rag_chunks=None,
+        rag_query=None,
+        rag_error=None,
+        tavtigian=None,
+        richards_2015=None,
+        frameworks_agree=None,
+        disagreement_explanation=None,
+        primary_classification=None,
+        primary_framework=None,
+        svi_overrides_applied=None,
+        guardrails=None,
         current_node=None,
         errors=[],
         warnings=[],

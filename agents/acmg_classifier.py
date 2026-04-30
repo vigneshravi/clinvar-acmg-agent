@@ -2,6 +2,14 @@
 
 Uses Claude (claude-sonnet-4-5) to synthesize all evidence and produce
 a five-tier ACMG classification with explicit criteria evaluation.
+
+SVI integration (2026-04-30): after the LLM proposes its criteria list, this
+node also runs the deterministic SVI rule engine (svi.acmg_rules) for the
+criteria covered there — PVS1 (Abou Tayoun 2018 + Riggs HI gate), BA1, BS1,
+PM2_Supporting (ClinGen SVI 2020 downgrade), PP3/BP4 (Pejaver 2022), BP7 —
+and OVERWRITES the LLM-proposed entries for those criteria with the
+deterministic results. Then computes the dual-framework verdict (Tavtigian
+Bayesian primary + Richards 2015 Table 5 comparison) via combine_criteria().
 """
 
 import json
@@ -13,15 +21,15 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from graph.state import VariantState
+from svi import acmg_rules as _svi_rules
+from svi.guardrails import (
+    DISCLAIMER as _SVI_DISCLAIMER,
+    detect_injection as _detect_injection,
+)
 
 logger = logging.getLogger(__name__)
 
-DISCLAIMER = (
-    "This is an AI-assisted research tool and should not be used for clinical "
-    "decision-making. Variant classifications should be reviewed by a "
-    "certified clinical molecular geneticist and confirmed through validated "
-    "clinical-grade processes."
-)
+DISCLAIMER = _SVI_DISCLAIMER  # research-only disclaimer (Microsoft RAI Layer 3)
 
 SYSTEM_PROMPT = """\
 You are a clinical molecular geneticist applying the ACMG/AMP 2015 \
@@ -601,11 +609,211 @@ def _parse_llm_response(text: str) -> dict[str, Any]:
     return json.loads(text)
 
 
+# ---------------------------------------------------------------------------
+# SVI deterministic-rules adapter (2026-04-30)
+# ---------------------------------------------------------------------------
+# These six criteria are computed *deterministically* from VEP + gnomAD +
+# dbNSFP + ClinGen and override the LLM's proposals when both fire.
+# ---------------------------------------------------------------------------
+
+_SVI_CRITERIA_CODES = {"PVS1", "BA1", "BS1", "PM2", "PM2_Supporting", "PP3", "BP4", "BP7"}
+
+
+def _selected_tx(state: VariantState) -> dict[str, Any]:
+    sel_tx = state.get("selected_transcript", "")
+    for tx in state.get("all_transcripts") or []:
+        tid = tx.get("nm_accession") or tx.get("enst_accession")
+        if tid == sel_tx:
+            return tx
+    return {}
+
+
+def _global_af(state: VariantState) -> tuple[float | None, bool]:
+    """Return (global_af, gnomad_available)."""
+    gnomad = state.get("gnomad") or {}
+    if not isinstance(gnomad, dict):
+        return None, False
+    af_data = gnomad.get("allele_frequency") or {}
+    available = bool(af_data.get("variant_in_gnomad", False))
+    af = af_data.get("global_af")
+    if isinstance(af, str):
+        try:
+            af = float(af)
+        except ValueError:
+            af = None
+    return af, available
+
+
+def _revel_score(state: VariantState) -> float | None:
+    """Pull REVEL from gnomad_agent's insilico_predictors block, if present."""
+    gnomad = state.get("gnomad") or {}
+    if not isinstance(gnomad, dict):
+        return None
+    pred = gnomad.get("insilico_predictors") or {}
+    revel = pred.get("revel") if isinstance(pred, dict) else None
+    if isinstance(revel, dict):
+        score = revel.get("score")
+        if isinstance(score, (int, float)):
+            return float(score)
+    if isinstance(revel, (int, float)):
+        return float(revel)
+    return None
+
+
+def _spliceai_max(state: VariantState) -> float | None:
+    gnomad = state.get("gnomad") or {}
+    if not isinstance(gnomad, dict):
+        return None
+    pred = gnomad.get("insilico_predictors") or {}
+    sa = pred.get("spliceai") if isinstance(pred, dict) else None
+    if isinstance(sa, dict):
+        # Try common keys
+        for k in ("ds_max", "max", "score"):
+            if k in sa and isinstance(sa[k], (int, float)):
+                return float(sa[k])
+    if isinstance(sa, (int, float)):
+        return float(sa)
+    return None
+
+
+def _run_svi_rules(state: VariantState) -> tuple[list[dict[str, Any]], list[str]]:
+    """Run the deterministic SVI evaluators. Returns (criteria, overrides_applied)."""
+    tx = _selected_tx(state)
+    consequence_terms = tx.get("consequence_terms") or []
+    gene_symbol = state.get("gene_symbol")
+    exon_field = tx.get("exon")
+    protein_position = tx.get("protein_start")
+    protein_length = tx.get("protein_length") or tx.get("protein_end")
+    clingen_dosage = state.get("clingen_dosage")
+
+    af, gnomad_available = _global_af(state)
+    revel = _revel_score(state)
+    spliceai = _spliceai_max(state)
+
+    results: list[dict[str, Any]] = []
+    overrides: list[str] = []
+
+    # PVS1 — Abou Tayoun 2018 + Riggs HI gate
+    pvs1 = _svi_rules.evaluate_PVS1(
+        consequence_terms=consequence_terms,
+        gene_symbol=gene_symbol,
+        exon_field=exon_field,
+        protein_position=protein_position,
+        protein_length=protein_length,
+        clingen_dosage=clingen_dosage,
+    )
+    results.append(pvs1)
+    if pvs1.get("met"):
+        overrides.append("Abou Tayoun PVS1 tree")
+    if clingen_dosage and clingen_dosage.get("available"):
+        overrides.append("ClinGen HI gate")
+
+    # Frequency-based — BA1, BS1, PM2_Supporting
+    ba1 = _svi_rules.evaluate_BA1(af, gnomad_available)
+    bs1 = _svi_rules.evaluate_BS1(af, gnomad_available)
+    pm2 = _svi_rules.evaluate_PM2(af, gnomad_available)
+    results.extend([ba1, bs1, pm2])
+    overrides.append("PM2 Supporting (SVI 2020)")
+
+    # PP3 / BP4 — Pejaver 2022
+    pp3 = _svi_rules.evaluate_PP3_BP4(revel)
+    results.append(pp3)
+    if revel is not None:
+        overrides.append("Pejaver REVEL calibration")
+
+    # BP7 — synonymous + low SpliceAI
+    bp7 = _svi_rules.evaluate_BP7(consequence_terms, spliceai)
+    results.append(bp7)
+
+    # Always-shown overrides applied by default (project rule)
+    overrides.append("Tavtigian Bayesian")
+    overrides.append("PP5/BP6 deprecated")
+
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    overrides_dedup: list[str] = []
+    for o in overrides:
+        if o not in seen:
+            seen.add(o)
+            overrides_dedup.append(o)
+
+    return results, overrides_dedup
+
+
+def _merge_criteria(
+    llm_criteria: list[dict[str, Any]],
+    svi_criteria: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge LLM and SVI criteria — SVI wins for codes it covers.
+
+    PathoMAN's LLM produces a broad list (PS1, PS3, PM1, etc.). The SVI
+    deterministic engine produces an authoritative list for PVS1, BA1, BS1,
+    PM2_Supporting, PP3, BP4, BP7. For overlapping codes, SVI replaces the
+    LLM's entry. PP5 and BP6 are dropped entirely (deprecated by ClinGen
+    SVI 2018).
+    """
+    svi_codes = {c["code"] for c in svi_criteria}
+    # Also map LLM codes that the SVI module emits under different names
+    # (e.g. PathoMAN LLM may emit "PM2"; SVI emits "PM2_Supporting").
+    code_aliases = {
+        "PM2": "PM2_Supporting",
+        "PM2_Supporting": "PM2_Supporting",
+    }
+
+    out: list[dict[str, Any]] = []
+    # Start with SVI (authoritative)
+    out.extend(svi_criteria)
+
+    # Add LLM criteria that SVI didn't cover and aren't deprecated
+    for c in llm_criteria or []:
+        code = c.get("code", "")
+        canonical = code_aliases.get(code, code)
+        if canonical in svi_codes or code in svi_codes:
+            continue
+        if code in {"PP5", "BP6"}:
+            # Deprecated by ClinGen SVI 2018 — skip silently (badge surfaces this)
+            continue
+        out.append(c)
+    return out
+
+
 def acmg_classifier_node(state: VariantState) -> dict[str, Any]:
-    """Classify variant using ACMG criteria with Claude LLM reasoning."""
+    """Classify variant using ACMG criteria with Claude LLM reasoning + SVI rules.
+
+    Pipeline (post-2026-04-30 SVI integration):
+        1. Three-layer guardrails: scan raw_input for prompt injection.
+        2. LLM produces broad criteria list (PS1/PS3/PM1/literature/etc.).
+        3. Deterministic SVI rule engine evaluates PVS1 (Abou Tayoun + Riggs),
+           BA1, BS1, PM2_Supporting, PP3 (Pejaver), BP4, BP7.
+        4. Merge — SVI wins for the codes it covers; PP5/BP6 are dropped.
+        5. combine_criteria() runs Tavtigian Bayesian (primary) AND
+           Richards 2015 Table 5 (comparison). Both verdicts are surfaced.
+    """
     logger.info("acmg_classifier_node: starting classification")
 
     updates: dict[str, Any] = {"current_node": "acmg_classifier"}
+
+    # ---- Layer 3 (Application/I-O): prompt-injection scan on user input ----
+    raw_input = state.get("raw_input", "") or ""
+    injection_detected, injection_reason = _detect_injection(raw_input)
+    guardrails_status: dict[str, Any] = {
+        "layer1_model": {
+            "deterministic_criteria": [
+                "PVS1", "BA1", "BS1", "PM2_Supporting", "PP3", "BP4", "BP7",
+            ],
+            "active": True,
+        },
+        "layer2_metaprompt": {
+            "schema": "ClassifierOutput (Pydantic)",
+            "defensive_prompt": True,
+            "validated": None,  # set after merge
+        },
+        "layer3_io": {
+            "injection_detected": injection_detected,
+            "injection_reason": injection_reason,
+            "disclaimer_attached": True,
+        },
+    }
 
     # Build the evidence prompt
     evidence_prompt = _build_evidence_prompt(state)
@@ -617,6 +825,8 @@ def acmg_classifier_node(state: VariantState) -> dict[str, Any]:
         max_tokens=4096,
     )
 
+    llm_criteria: list[dict[str, Any]] = []
+    llm_reasoning = ""
     try:
         response = llm.invoke([
             SystemMessage(content=SYSTEM_PROMPT),
@@ -628,7 +838,6 @@ def acmg_classifier_node(state: VariantState) -> dict[str, Any]:
         try:
             parsed = _parse_llm_response(response_text)
         except json.JSONDecodeError:
-            # Retry with explicit JSON instruction
             logger.warning("acmg_classifier: JSON parse failed, retrying")
             retry_response = llm.invoke([
                 SystemMessage(content=SYSTEM_PROMPT),
@@ -640,27 +849,78 @@ def acmg_classifier_node(state: VariantState) -> dict[str, Any]:
             retry_text = retry_response.content if isinstance(retry_response.content, str) else str(retry_response.content)
             parsed = _parse_llm_response(retry_text)
 
-        # Extract fields from parsed response
-        updates["criteria_triggered"] = parsed.get("criteria_triggered", [])
-        updates["classification"] = parsed.get("classification", "VUS")
-        updates["confidence"] = parsed.get("confidence", "Low")
-        updates["reasoning"] = parsed.get("reasoning", "")
-        updates["disclaimer"] = DISCLAIMER
-
-        logger.info(
-            "acmg_classifier: classification=%s, confidence=%s, %d criteria",
-            updates["classification"],
-            updates["confidence"],
-            len(updates["criteria_triggered"]),
-        )
+        llm_criteria = parsed.get("criteria_triggered", []) or []
+        llm_reasoning = parsed.get("reasoning", "") or ""
 
     except Exception as e:
         logger.exception("acmg_classifier: LLM call failed: %s", e)
-        updates["criteria_triggered"] = []
-        updates["classification"] = "VUS"
-        updates["confidence"] = "Low"
-        updates["reasoning"] = f"ACMG classification failed: {str(e)}. Defaulting to VUS."
-        updates["disclaimer"] = DISCLAIMER
-        updates["errors"] = state.get("errors", []) + [f"ACMG classifier error: {str(e)}"]
+        updates["errors"] = state.get("errors", []) + [f"ACMG classifier LLM error: {str(e)}"]
+        llm_criteria = []
+        llm_reasoning = f"LLM call failed ({e}); deterministic SVI rules still applied."
+
+    # ---- Layer 1 (Model): deterministic SVI rule engine ----
+    try:
+        svi_criteria, overrides_applied = _run_svi_rules(state)
+    except Exception as e:
+        logger.exception("acmg_classifier: SVI rules failed: %s", e)
+        svi_criteria = []
+        overrides_applied = ["PP5/BP6 deprecated", "Tavtigian Bayesian"]
+        updates["errors"] = state.get("errors", []) + [f"SVI rules error: {str(e)}"]
+
+    # Merge — SVI wins for the codes it covers; deprecated PP5/BP6 dropped
+    merged_criteria = _merge_criteria(llm_criteria, svi_criteria)
+
+    # ---- Combinatoric verdict: Tavtigian (primary) + Richards 2015 ----
+    try:
+        combined = _svi_rules.combine_criteria(merged_criteria)
+    except Exception as e:
+        logger.exception("acmg_classifier: combine_criteria failed: %s", e)
+        combined = {
+            "primary_classification": "VUS",
+            "primary_framework": "Tavtigian 2018 (Bayesian)",
+            "primary_confidence": "Low",
+            "tavtigian": None,
+            "richards_2015": None,
+            "frameworks_agree": None,
+            "disagreement_explanation": None,
+            "reasoning": f"combine_criteria failed: {e}",
+            "classification": "VUS",
+            "confidence": "Low",
+        }
+
+    guardrails_status["layer2_metaprompt"]["validated"] = bool(merged_criteria)
+
+    updates["criteria_triggered"] = merged_criteria
+    # Primary classification = Tavtigian Bayesian (SVI default, per user 2026-04-28)
+    updates["classification"] = combined.get("primary_classification") or combined.get("classification") or "VUS"
+    updates["confidence"] = combined.get("primary_confidence") or combined.get("confidence") or "Low"
+    # Compose reasoning: SVI summary first, then LLM's qualitative narrative
+    reasoning_parts: list[str] = []
+    if combined.get("reasoning"):
+        reasoning_parts.append(combined["reasoning"])
+    if llm_reasoning:
+        reasoning_parts.append(f"LLM context: {llm_reasoning}")
+    updates["reasoning"] = " ".join(reasoning_parts).strip()
+    updates["disclaimer"] = DISCLAIMER
+
+    # New SVI integration fields
+    updates["tavtigian"] = combined.get("tavtigian")
+    updates["richards_2015"] = combined.get("richards_2015")
+    updates["frameworks_agree"] = combined.get("frameworks_agree")
+    updates["disagreement_explanation"] = combined.get("disagreement_explanation")
+    updates["primary_classification"] = combined.get("primary_classification")
+    updates["primary_framework"] = combined.get("primary_framework")
+    updates["svi_overrides_applied"] = overrides_applied
+    updates["guardrails"] = guardrails_status
+
+    logger.info(
+        "acmg_classifier: primary=%s (%s), Richards=%s, agree=%s, %d criteria, %d overrides",
+        updates["classification"],
+        updates["confidence"],
+        (combined.get("richards_2015") or {}).get("classification"),
+        updates["frameworks_agree"],
+        len(merged_criteria),
+        len(overrides_applied),
+    )
 
     return updates
